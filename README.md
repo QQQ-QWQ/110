@@ -205,6 +205,8 @@ docker compose up --build
 └── docs/
     ├── 架构设计与关键取舍.md      # 为什么这样设计
     ├── 前端设计说明.md            # 模块划分 / 页面结构 / 交互流程 / 响应式策略
+    ├── UI设计方案.md              # 视觉风格 / 配色 / 字体 / 布局层级 / 动效 / 响应式
+    ├── 后端架构审核与CI排查报告.md # 可扩展性/稳定性评估 + CI 失败根因与改进方案
     ├── 测试与验证记录.md          # 实测过程与证据
     └── 代码审查标准与流程.md      # 团队代码审查标准（检查项/流程/分级/时限）
 ```
@@ -276,7 +278,7 @@ node scripts/e2e.mjs                  # 全部通过时退出码 0，可直接�
 | --- | --- | --- | --- |
 | L1 编辑器 | 保存时 | 统一缩进/行尾/编码 | `.editorconfig` |
 | L2 版本控制 | 克隆/提交时 | 强制 LF，防止容器脚本被 CRLF 破坏 | `.gitattributes` |
-| L3 CI | 开 PR 时 | 格式检查 + 静态检查 + 单元测试 + 后端构建/Prisma 校验 + 前端类型检查/构建 + 迁移可回放 + 仓库卫生（行尾/密钥/构建产物） | `.github/workflows/ci.yml` |
+| L3 CI | 开 PR 时 | 格式检查 + 静态检查 + 单元测试 + 后端构建 / Prisma schema 校验与格式规范 + 前端类型检查/构建 + 迁移可回放（空库重放 + 15 条 CHECK 约束核验）+ 仓库卫生（行尾/密钥/构建产物） | `.github/workflows/ci.yml` |
 | L4 人工 | PR 审查 | 正确性、安全、并发、可读性、测试覆盖（风格已由 L1~L3 覆盖，不占用人工带宽） | `.github/PULL_REQUEST_TEMPLATE.md`、`.github/CODEOWNERS` |
 
 **自动化质量门禁现状**
@@ -295,6 +297,19 @@ cd frontend && npm run format:check && npm run lint && npm run typecheck && npm 
 ```
 
 **设计要点**：CI 中的 lint / test / format 均用 `npm run xxx --if-present` 接线 —— 脚本不存在时自动跳过，一旦在 `package.json` 中加上即**自动生效**，无需改 CI。这样门禁从第一天就是绿的、可信的。
+
+**CI 失败排查与修复（2026-10-05）**
+
+远端 CI 曾连续 4 次全红（run #1~#4）。排查后确认**只有 2 个根因**，而不是 5 个 job 各自的问题：
+
+| 根因 | 表现 | 修复 |
+| --- | --- | --- |
+| `schema.prisma` 的 `@relation` 属性被拆成 6 行书写（Prisma 解析器不支持属性参数跨行，报 `P1012`） | 同时打红「后端」（`prisma generate`）与「迁移可回放性」（`prisma migrate deploy`）两个 job —— 两者共用 schema 解析路径 | 合并为单行并执行 `prisma format` |
+| 「后端」job 的 `prisma validate` 步骤缺 `DATABASE_URL`（该变量仅在 `migrations` job 设置过） | run #1 的失败原因；即使修好上一条，该步骤仍会红 | 在 job 级注入占位 `DATABASE_URL`（仅用于解析，不建立连接） |
+
+修复后 CI run #5（commit `603cedc`）**5/5 job 全部 success，无 skipped 步骤**。同时补充了防复发门禁：新增「Prisma schema 已按官方格式规范化」检查（`prisma format` + `git diff` 断言，这是唯一能自动拦住上述根因的检查）、把 `validate` 提到 `generate` 之前以快速失败、领域 CHECK 约束核验从 4 条扩展到全部 15 条。
+
+> 完整的排查过程、证据与架构评估见 **[`docs/后端架构审核与CI排查报告.md`](docs/后端架构审核与CI排查报告.md)**。
 
 **测试覆盖**（对应标准 §3.G 的四类强制场景）
 

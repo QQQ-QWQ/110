@@ -288,7 +288,7 @@ node scripts/e2e.mjs                  # 全部通过时退出码 0，可直接�
 | 格式（Prettier） | ✅ | ✅ | `npm run format:check` |
 | 静态检查（ESLint） | ✅ 0 error 0 warning | ✅ 0 error 0 warning | `npm run lint` |
 | 类型检查 / 构建 | ✅ `nest build` | ✅ `vue-tsc` + `vite build` | `npm run build` |
-| 单元测试 | ✅ **47 个** | ✅ **75 个** | `npm test` |
+| 单元测试 | ✅ **50 个** | ✅ **75 个** | `npm test` |
 
 ```bash
 # 完整验证（任一步失败即视为不合格）
@@ -333,7 +333,7 @@ cd frontend && npm run format:check && npm run lint && npm run typecheck && npm 
 
 > 前端组件测试用 Vue 内置的 `vue/server-renderer` 做渲染断言，**零新增依赖**（不引入 jsdom / test-utils）；断言的是真实 DOM 结构与 aria 属性，而非「组件能被挂载」。交互流程与响应式布局由 `scripts/e2e.mjs` 与手工验收覆盖。
 
-**已知质量缺口（诚实披露）**：尚未接入本地 `pre-commit` 钩子与依赖漏洞扫描（`npm audit` / Dependabot），见标准 §6.5。单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互；跨容器的端到端行为由 `scripts/e2e.mjs` 覆盖（DEM-01~08），DEM-09（故障可重试）与 DEM-10（数据持久化）仍为手工步骤。前端组件测试为 SSR 渲染断言，不含 jsdom 点击交互模拟。
+**已知质量缺口（诚实披露）**：尚未接入本地 `pre-commit` 钩子与依赖漏洞扫描（`npm audit` / Dependabot），见标准 §6.5。单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互；跨容器端到端行为由 `scripts/e2e.mjs` 覆盖（DEM-00~08，已实跑 44/44 通过）。`docker compose up --build` 三容器一键启动、nginx 反代与命名卷挂载尚未实测（本机 Docker 引擎不可用），DEM-10 以「重启数据库进程」替代「容器重建」验证。未做并发压测。前端组件测试为 SSR 渲染断言，不含 jsdom 点击交互模拟。CI 尚无「起服务 + 跑 e2e」的 job，因此跨层缺陷无法被 CI 自动拦截。
 
 ---
 

@@ -91,7 +91,7 @@ error: Error validating: This line is not a valid field or attribute definition.
 
 注意 `migrate deploy` **在建立数据库连接之前**就已失败 —— 所以「在空库上执行迁移」这一步的失败与 PostgreSQL、与迁移 SQL、与 service 容器配置**全都无关**。这一点很重要：它解释了为什么失败信息指向迁移，而真正的问题在 schema。
 
-**级联影响**：`generate` 是「后端」job 的第 5 步，失败后其后的 `构建 / Prettier / ESLint / 单元测试` **全部被 skipped** —— 也就是说，**后端的构建、静态检查与 47 个单元测试在这 3 次运行中一次都没有真正执行过**。CI 显示的红点掩盖了「这些检查其实根本没跑」这一更严重的事实。
+**级联影响**：`generate` 是「后端」job 的第 5 步，失败后其后的 `构建 / Prettier / ESLint / 单元测试` **全部被 skipped** —— 也就是说，**后端的构建、静态检查与单元测试在这 3 次运行中一次都没有真正执行过**。CI 显示的红点掩盖了「这些检查其实根本没跑」这一更严重的事实。
 
 ### 1.3 根因二：`prisma validate` 步骤缺 `DATABASE_URL`（独立于根因一）
 
@@ -208,7 +208,7 @@ src/
 
 **评价：分层是干净的，依赖方向单向（modules → pipeline → domain，core 被各层共享但无反向依赖）。** 两个设计决策尤其值得肯定：
 
-1. **`domain/` 零依赖纯函数** —— 状态机、授权、不变量都不碰数据库、不碰 HTTP，因此能被 47 个单元测试直接覆盖，无需起库。这是「领域逻辑可验证」的前提。
+1. **`domain/` 零依赖纯函数** —— 状态机、授权、不变量都不碰数据库、不碰 HTTP，因此能被 50 个单元测试直接覆盖，无需起库。这是「领域逻辑可验证」的前提。
 2. **POLICY 单点** —— 角色判定只在 `policy.ts` 一处（`assertCanRead` / `assertCanPerform`），controller 内被明令禁止写角色判断。这消除了「权限散落在 N 个 handler」这一最常见的越权来源。
 
 ### 2.2 统一写命令管道（`pipeline/command-pipeline.ts`）
@@ -488,6 +488,26 @@ if npx prisma migrate deploy; then ...
 | C3 | **已应用迁移不可修改** | 检测 `prisma/migrations/` 下**已存在目录**内文件被修改 → 告警（新增目录放行）。 | 需要在 CI 中对比 base 分支，实现略复杂（`git diff --name-only ${{ github.event.pull_request.base.sha }}...HEAD -- prisma/migrations`）。纯 push 触发时无 base，需降级为「跳过并提示」。 |
 | C4 | **本地前置检查** | `scripts/preflight.mjs`：一键复跑 CI 的机械检查（schema 格式、行尾、Prettier、lockfile 同步）。 | 把反馈周期从 3~5 分钟压到 1 秒。代价：需要开发者记得跑 —— 用 `pre-push` 钩子可强制，但钩子可被 `--no-verify` 绕过（这是设计使然，不是缺陷）。 |
 | C5 | **分支保护声明** | 在 `docs/代码审查标准与流程.md` 明确 main 的 required status checks，作为交付验收项。 | 仓库内的文档无法强制 GitHub 侧配置；但**把「已配置分支保护」写成验收项**能确保它不被遗忘。 |
+| **C6** | **增加「起服务 + 跑 e2e」的 job**（**本轮新增，优先级最高**） | 在 CI 中用 postgres service + `prisma migrate deploy` + `node dist/seed.js` + `node dist/main.js` + `node scripts/e2e.mjs` 跑一遍 44 项断言。 | **这是唯一能拦住「跨层缺陷」的检查。** 见下方说明 —— 它的必要性已由本轮实跑直接证明。 |
+
+**为什么 C6 的优先级最高（有实证）**
+
+本轮端到端实跑（见 `docs/测试与验证记录.md` §4.2）**首次真正执行**了 `scripts/e2e.mjs`，
+立刻暴露 2 个此前全部检查都漏掉的缺陷：
+
+| 缺陷 | 严重度 | 为什么现有 CI 拦不住 |
+| --- | --- | --- |
+| `seed.ts` 循环外键写序错误 → `P2003` → 因 entrypoint 的 `set -e` 放大为 **`api` 容器起不来**，即「一键启动」交付要求实际不可用 | **P0** | `migrations` job 只校验「迁移能在空库跑通」与「约束存在」，**不校验种子能否写入**；后端 job 只跑 `build` + 单测，**不起服务** |
+| 版本过期（412）被状态冲突（409）抢先，与文档、与 e2e 脚本均不一致 | P1 | 单测覆盖纯逻辑，不碰 HTTP 层；这类「错误优先级」问题在静态检查与代码审查中都不显眼 |
+
+两者的共同点：**都只在服务真正跑起来时才暴露**。因此在 CI 里跑一遍 e2e
+不是「锦上添花」，而是补上了当前门禁体系中缺失的一整层。
+
+> **取舍**：该 job 会让 CI 时间显著增加（安装依赖 + 构建 + 起库 + 起服务 + 44 项断言，估 +2~3 分钟），
+> 且需要维护「CI 里如何起服务」的编排逻辑（与 `docker compose` 存在重复）。
+> **建议的实现方式**：不要另写一套编排，而是直接复用 `docker compose up --build -d`
+> —— 这样 C6 顺带把「一键启动」这条交付要求也纳入了持续验证，
+> 且不会出现「CI 的启动方式与交付的启动方式不一致」这一新的漂移源。
 
 ---
 
@@ -497,6 +517,7 @@ if npx prisma migrate deploy; then ...
 
 | 项 | 预估改动 | 验证方式 |
 |---|---|---|
+| **C6 CI 起服务跑 e2e**（**最优先**） | `.github/workflows/ci.yml` 新增 job，复用 `docker compose up --build -d` | CI 自证：本轮 2 个跨层缺陷都应让该 job 变红 |
 | E1 列表游标分页 | `requirements.service.ts` + controller DTO + 前端列表页 | 单测：分页边界（空结果、最后一页、非法 cursor）；实跑：`node scripts/e2e.mjs` |
 | S1 定时清理任务 | 新增 `core/maintenance.service.ts` + 定时器 | 单测：清理只删 `COMPLETED` 与过期会话；实跑：插入过期行后确认被删 |
 | S2 连接池与超时 | `.env.example` + `docker-compose.yml` | 实跑：`docker compose config` + 观察连接数 |
@@ -517,7 +538,7 @@ E5 会话缓存（**需先解决与「登出即时失效」的冲突**）、S6 l
 |---|---|
 | 引入 Redis | 架构约束明确禁止。且当前无状态设计已能横扩，Redis 主要能解决「跨副本会话缓存」与「分布式限流」—— 前者与「登出即时失效」冲突，后者在本题规模下用内存实现足够。 |
 | 换回原生 `bcrypt` | 与 Dockerfile 明确要规避「原生模块构建风险」的决策冲突。用 E4 并发闸门更划算。 |
-| 把 `domain/` 拆分或引入 DDD 聚合根等重型模式 | `domain/` 已经是零依赖纯函数、47 个单测覆盖、职责清晰。当前复杂度下引入更重的模式只增加认知成本，不解决任何已识别的问题。 |
+| 把 `domain/` 拆分或引入 DDD 聚合根等重型模式 | `domain/` 已经是零依赖纯函数、50 个单测覆盖、职责清晰。当前复杂度下引入更重的模式只增加认知成本，不解决任何已识别的问题。 |
 | 为写路径引入分布式锁 | 乐观锁（`rowVersion` 条件更新）已正确解决并发写；分布式锁会引入新的故障点（锁服务不可用即全站不可写），且比乐观锁更慢。 |
 | 把 `event` 表改成只存最新状态 | 事件流是「需求历史可追溯」这一验收项的实现基础（`seq = row_version`，与乐观锁版本号严格对齐）。只应分页，不应裁剪语义。 |
 

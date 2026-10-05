@@ -14,7 +14,7 @@
 | **当前状态** | **已修复并验证**：commit `603cedc` 推送后 CI 由「4 次全红」转绿，此后 run #6 ~ #11 **连续全绿**。最新 run #11（`d88e3b6`）为 **6 个 job、66 个步骤全部 success**（唯一 skipped 的是 `if: failure()` 的日志步骤，按设计跳过）。 |
 | **可扩展性** | 读路径曾有 **2 处会随数据量线性恶化**的无界查询（列表无分页、详情含无界事件流）—— **两处均已修复**（E1 键集分页 / E2 详情与历史分页）；横向扩展曾有 **2 个硬阻塞**（`container_name` 阻断 `--scale`、nginx 不在运行时重解析 DNS）—— 已解除（E3，其中 nginx 部分仅结构校验）。写路径（乐观锁 + 幂等）本身是可横向扩展的。 |
 | **稳定性** | 核心写路径的事务/幂等/乐观锁设计是**扎实的**；主要缺口在**运维面**：幂等记录与会话过期行无清理（无界增长）、连接池与语句超时未显式配置、无 request-id 关联日志、`web` 未等服务健康即启动。**其中前三项已修复**（S1 / S2 / S5，见 §6），`web` 等服务健康（S3）仍待做。 |
-| **最高优先级动作** | **P0 共 6 项已全部落地**（见 §6）：CI 起服务跑 e2e、列表游标分页、数据保留清理、连接池与超时、解除横向扩展阻塞、迁移漂移检测。5 项有自动化验证（单测 / 真实数据库 / e2e / CI）；**唯一例外是 E3 的 nginx 改动**，只做了结构解析校验（本环境无 Docker 引擎与 nginx 二进制）。**P1 已启动**：C4 本地前置检查（`scripts/preflight.mjs`，CI 与本地同源，见 §5.3、§7.1）、S5 请求编号贯穿日志（见 §5.2、§7.2）、E2 详情/历史分页（见 §5.1、§7.3）三项已落地。 |
+| **最高优先级动作** | **P0 共 6 项已全部落地**（见 §6）：CI 起服务跑 e2e、列表游标分页、数据保留清理、连接池与超时、解除横向扩展阻塞、迁移漂移检测。5 项有自动化验证（单测 / 真实数据库 / e2e / CI）；**唯一例外是 E3 的 nginx 改动**，只做了结构解析校验（本环境无 Docker 引擎与 nginx 二进制）。**P1 已启动**：C4 本地前置检查（`scripts/preflight.mjs`，CI 与本地同源，见 §5.3、§7.1）、S5 请求编号贯穿日志（见 §5.2、§7.2）、E2 详情/历史分页（见 §5.1、§7.3）、E4 登录并发闸门（见 §5.1、§7.4）四项已落地。 |
 
 ---
 
@@ -464,7 +464,7 @@ if npx prisma migrate deploy; then ...
 | E1 | **列表游标分页** | `list()` 增加 `limit`（默认 20，上限 100）+ `cursor`（`createdAt + id` 复合游标）。返回 `nextCursor`。 | 游标分页（而非 `offset`）在数据持续写入时不会跳行/重行；代价是前端不能直接跳页。对「按时间倒序的协作列表」这一场景，游标是正确选择。 |
 | E2 | ✅ **已落地** | `detail()` 的 `events` / `submissions` 加上界（事件默认最近 50、上限 200，可用 `?eventsLimit=` 调；提交固定最近 20），并回传 `eventsTotal` / `eventsHasMore` / `eventsLimit` 与 `submissionsTotal` / `submissionsHasMore`；完整时间线走 `/history`，按事件的 `seq` 游标分页。 | 详情页首屏只加载最近 N 条，历史按需拉取 —— 详情响应因此**有上界**。游标选 `seq` 而非 `(createdAt, id)`：单调整数天然有序，不存在同毫秒的稳定性问题。代价是前端多一次请求；另外前端要如实显示「这是最近 N 条，共 M 条」，不能把截断藏起来。 |
 | E3 | **解除横向扩展阻塞** | 删 `container_name`；nginx 加 `resolver 127.0.0.11 valid=10s` + 变量式 `proxy_pass`。 | 见 3.2：新副本纳入流量最多延迟 10s。对本题规模可接受。 |
-| E4 | **登录并发闸门** | 登录路径加信号量（上限 ≈ CPU 核数），超出则排队。 | 见 3.4：把 CPU 争用的故障域从「整个 API」收窄到「登录」。代价是登录延迟在高并发下上升，但这是**可预期的排队**而非不可预期的全站劣化。 |
+| E4 | ✅ **已落地** | `domain/semaphore.ts`（纯逻辑信号量）+ `core/login-gate.ts`（读配置 + 记日志）；`AuthService.login()` 用闸门**只罩住 `bcrypt.compare` 那一段**。默认并发取 `os.availableParallelism()`，队列上限 50，排队超时 5s；队列满或排队超时 → **503 + `Retry-After`**。 | 见 3.4：把 CPU 争用的故障域从「整个 API」收窄到「登录」。三处取舍：① 只罩密码校验（数据库查询是便宜 I/O 且有连接池兜底，多罩一层只降低吞吐）；② 排队**必须有上限**（无限排队只是把问题从 CPU 挪到内存）；③ 释放时许可**直接交给队首**（FIFO，否则等待时间不可预期）。用 `availableParallelism()` 而非 `cpus().length` —— 容器里后者返回宿主机核数，会把闸门开到超过实际算力。 |
 | E5 | **会话读取缓存（可选，需权衡）** | 进程内 LRU 缓存会话解析结果，TTL ≤ 30s；失效由 `lastSeenAt` 节流写回兜底。 | ⚠️ **这项建议与「登出即时失效」直接冲突**：多副本下，副本 B 的缓存不知道副本 A 上发生的登出，登出延迟最长 = TTL。当前架构刻意用「服务端会话表」换即时失效（`session.service.ts` 的注释明确说明了这一点）。**若严格保留该语义，则不应做这项缓存。** 建议：先做 E1~E4，用压测确认 `session` 查询真的是瓶颈后再决定；若做，TTL 应压到 ≤ 5s 并接受「登出最长 5 秒后完全生效」。 |
 
 ### 5.2 稳定性改进
@@ -488,7 +488,7 @@ if npx prisma migrate deploy; then ...
 | C3 | **已应用迁移不可修改** | 检测 `prisma/migrations/` 下**已存在目录**内文件被修改 → 告警（新增目录放行）。 | 需要在 CI 中对比 base 分支，实现略复杂（`git diff --name-only ${{ github.event.pull_request.base.sha }}...HEAD -- prisma/migrations`）。纯 push 触发时无 base，需降级为「跳过并提示」。 |
 | C4 | ✅ **已落地** | `scripts/preflight.mjs`：一键复跑 CI 的机械检查。**并且 CI 的 `hygiene` job 直接调用它**（`--mechanical`），于是「本地 preflight 绿」与「CI hygiene 绿」是同一件事，不存在两套会漂移的检查。 | 把反馈周期从 3~5 分钟压到 **1 秒**。代价有两处，都已记录：① 这些检查在 CI 里合并成了一个步骤，粒度不如从前 —— 但这正是该脚本的意义（拿不到日志时本地跑一遍就能定位）；② 需要开发者记得跑，用 `pre-push` 钩子可强制，但钩子可被 `--no-verify` 绕过（设计使然，不是缺陷）。 |
 | C5 | **分支保护声明** | 在 `docs/代码审查标准与流程.md` 明确 main 的 required status checks，作为交付验收项。 | 仓库内的文档无法强制 GitHub 侧配置；但**把「已配置分支保护」写成验收项**能确保它不被遗忘。 |
-| **C6** | ✅ **已落地**（**本轮新增，优先级最高**） | 新增 `e2e` job：postgres service → `prisma generate` + `migrate deploy` → `npm run build` → `node dist/seed.js` → 种子完整性断言 → `node dist/main.js` 等就绪 → `node scripts/e2e.mjs`（DEM-00~08 + DEM-11~13，79 项断言）。 | **这是唯一能拦住「跨层缺陷」的检查。** 见下方说明 —— 它的必要性已由本轮实跑直接证明。 |
+| **C6** | ✅ **已落地**（**本轮新增，优先级最高**） | 新增 `e2e` job：postgres service → `prisma generate` + `migrate deploy` → `npm run build` → `node dist/seed.js` → 种子完整性断言 → `node dist/main.js` 等就绪 → `node scripts/e2e.mjs`（DEM-00~08 + DEM-11~14，82 项断言）。 | **这是唯一能拦住「跨层缺陷」的检查。** 见下方说明 —— 它的必要性已由本轮实跑直接证明。 |
 
 **为什么 C6 的优先级最高（有实证）**
 
@@ -503,7 +503,7 @@ if npx prisma migrate deploy; then ...
 两者的共同点：**都只在服务真正跑起来时才暴露**。因此在 CI 里跑一遍 e2e
 不是「锦上添花」，而是补上了当前门禁体系中缺失的一整层。
 
-> **取舍**：该 job 会让 CI 时间显著增加（安装依赖 + 构建 + 起库 + 起服务 + 79 项断言，估 +2~3 分钟），
+> **取舍**：该 job 会让 CI 时间显著增加（安装依赖 + 构建 + 起库 + 起服务 + 82 项断言，估 +2~3 分钟），
 > 且需要维护「CI 里如何起服务」的编排逻辑（与 `docker compose` 存在重复）。
 
 **落地时的决定：没有按上面的建议用 `docker compose up`，而是用 postgres service + 直接运行编译产物。**
@@ -534,7 +534,7 @@ if npx prisma migrate deploy; then ...
 
 | 验证点 | 结果 |
 |---|---|
-| 新增 `e2e` job 在真实 runner 上跑通 | ✅ 6 个 step 全部 success（`Initialize containers` → 安装依赖 → generate/migrate/build/seed → 种子完整性断言 → 起 API 等就绪 → 44 项断言；**run #8 时点**，脚本后续扩展至 DEM-11 + DEM-12 共 61 项，见 §7） |
+| 新增 `e2e` job 在真实 runner 上跑通 | ✅ 6 个 step 全部 success（`Initialize containers` → 安装依赖 → generate/migrate/build/seed → 种子完整性断言 → 起 API 等就绪 → 44 项断言；**run #8 时点**，脚本后续扩展至 DEM-11~14 共 82 项，见 §7） |
 | 是否拖慢流水线 | 该 job 约 **37 秒**（含 `npm ci`、`prisma generate`、`migrate deploy`、`nest build`、起库起服务与全部断言），远低于预估的 +2~3 分钟 —— 因为 `setup-node` 的 npm 缓存命中了 |
 | 是否引入不稳定 | 6 个 job 一次性全绿，无重试 |
 | 既有 5 个 job 是否受影响 | ❌ 无。run #8 中其余 5 个 job 结论与 run #7 一致 |
@@ -586,7 +586,7 @@ if npx prisma migrate deploy; then ...
 | **C4 本地前置检查** | ✅ **已完成** —— `scripts/preflight.mjs`（8 项检查）；CI 的 `hygiene` job 改为**直接调用它**，本地与 CI 同源。6 项负例验证见 §7.1 |
 | **S5 request-id 贯穿日志** | ✅ **已完成** —— `core/request-id.ts`（中间件 + 访问日志）+ 异常过滤器回传编号；单测 12 条 + e2e DEM-12 共 5 项断言，见 §7.2 |
 | **E2 详情/历史分页** | ✅ **已完成** —— 详情的事件与提交加上界并回传总数/`hasMore`；`/history` 按 `seq` 游标分页；单测 7 条 + e2e DEM-13 共 18 项断言，见 §7.3 |
-| E4 登录并发闸门 | ⏳ 待做 |
+| **E4 登录并发闸门** | ✅ **已完成** —— 信号量只罩 `bcrypt.compare`；饱和 → 503 + `Retry-After`；单测 12 条 + e2e DEM-14 共 3 项断言，见 §7.4（**饱和路径只有单测覆盖，原因见该节**） |
 | E4 登录并发闸门 | ⏳ 待做 |
 | S3 `web` 等 `api` 健康 | ⏳ 待做 —— **需 Docker 引擎**才能验证，本环境不具备 |
 | S4 entrypoint 错误可诊断 | ⏳ 待做 —— **需 Docker 引擎**才能验证，本环境不具备 |
@@ -622,11 +622,11 @@ E5 会话缓存（**需先解决与「登出即时失效」的冲突**）、S6 l
 | P0 全部落地后 CI 全绿 | run #10（`c9017b9`）**6/6 job success，66 步骤**（新增「迁移漂移检测」与「数据保留清理验证」两步） |
 | E1 落地后 CI 全绿 | run #11（`d88e3b6`）**6/6 job success，66 步骤**（`端到端验证 DEM-00 ~ DEM-08 + DEM-11` 步骤 success） |
 | C6 失败会变红（链路核验） | `tail -20 scripts/e2e.mjs` → `process.exit(failures === 0 ? 0 : 1)`；Actions `run:` 默认 `bash -e` |
-| 后端本地门禁 | `npm run format:check` / `npm run lint` / `npm test`（**95/95**，含 retention 14 + pagination 19 + request-id 12） |
+| 后端本地门禁 | `npm run format:check` / `npm run lint` / `npm test`（**107/107**，含 retention 14 + pagination 19 + request-id 12 + semaphore 12） |
 | C2 漂移检测双向验证 | 无漂移 → 退出码 0 `No difference detected.`；故意给 schema 加字段 → 退出码 2 `[+] Added column drift_probe_field` |
 | S1 真实库验证 | `node scripts/verify-retention.mjs` → 5/5 通过（含「PROCESSING 超 100h 必须保留」） |
 | S2 生效验证 | `SHOW statement_timeout` 由 `0` → `10s`（`options=-c%20statement_timeout%3D10000`） |
-| E1 端到端验证 | `node scripts/e2e.mjs` → **79 项断言 0 失败**（含 DEM-11 共 12 项 + DEM-12 共 5 项 + DEM-13 共 18 项） |
+| E1 端到端验证 | `node scripts/e2e.mjs` → **82 项断言 0 失败**（含 DEM-11 12 项 + DEM-12 5 项 + DEM-13 18 项 + DEM-14 3 项） |
 | C4 preflight 全绿 | `node scripts/preflight.mjs` → **8/8 通过**（机械层 5 项 + 工具层 3 项） |
 | C4 preflight 负例验证 | 逐项制造违规，**6/6 均被检出**（退出码 1，且只有该项报红）—— 矩阵见 §7.1 |
 | S5 请求编号单测 | `backend/test/request-id.test.js` 12 条（含「换行/控制字符必须被拒绝」与「5xx 响应体带 requestId、4xx 不带」） |
@@ -634,6 +634,10 @@ E5 会话缓存（**需先解决与「登出即时失效」的冲突**）、S6 l
 | S5 透传确实落到日志 | 服务端日志出现 `[HTTP] GET /api/requirements → 200 4.5ms rid=e2e-muv03wsv-rid` —— 客户端传入的编号被原样沿用，这正是「用户报编号 → 管理员 grep 日志」能成立的前提 |
 | E2 详情/历史上界 | 单测 7 条（`seq` 游标往返、畸形输入 422、**两类游标不可混用**、模拟时间线翻页 23 条不重复不遗漏） |
 | E2 端到端 | e2e DEM-13 共 18 项：详情事件数 ≤ `eventsLimit`、`eventsHasMore` 与总数自洽、事件按 `seq` 升序、**截断后仍给出真实总数**、**详情窗口是全量时间线的尾部**、历史游标续取**无重复且严格递增**、**逐页取完的事件数 = 详情报的 eventsTotal**、非法游标 422、超上限收敛到 200 |
+| E4 闸门单测 | `backend/test/semaphore.test.js` 12 条：并发数不被突破、**队列满 → 立即 503**、**排队超时 → 503 且必须出队**（否则队列泄漏到所有人被 503）、**FIFO**、抛错也释放许可、多余 release 不撑大池子、配置非法即抛错 |
+| E4 HTTP 映射 | `backend/test/request-id.test.js`：`Errors.overloaded()` → **503 + `Retry-After: 1`**；500 不带 `Retry-After`（重试不一定有用） |
+| E4 端到端 | e2e DEM-14 共 3 项：8 次并发登录全部 200、**每次得到独立会话**、突发之后仍能登录（许可未泄漏） |
+| E4 饱和路径 | ⚠️ **仅单测覆盖** —— 本环境无法做真实的饱和实验（沙箱内 PostgreSQL 在并发登录下反复崩溃），详见 §7.4 |
 | CHECK 约束清单 | `grep -oE '"[a-z_]+_chk"' backend/prisma/migrations/0001_init/migration.sql \| sort -u` → 15 条 |
 | 幂等记录无清理（**审核时**，现已修复） | `grep -rn "idempotencyRecord" backend/src \| grep -iE "delete\|clean\|purge"` → 当时为空 |
 | 无分页（**审核时**，现已修复） | `grep -rn "take:\|skip:\|cursor" backend/src` → 当时为空 |
@@ -687,6 +691,40 @@ E2 的核心不是「加了 `take`」，而是**截断之后行为仍然正确**
 **（3）两类游标不能混用。**
 列表游标编码 `(createdAt, id)`、时间线游标编码 `seq`。混用必须报 422，而不是静默把 `createdAt` 当 `seq` 用 —— 那会让分页悄悄错位。单测里有一条 ★ 用例专门断言两者互不通用。
 
+### 7.4 E4：一处**没有**拿到端到端实证的地方（诚实披露）
+
+闸门的核心语义由 **12 条确定性单测**覆盖，但**「真实饱和 → 503」这条端到端路径没能测成**，
+原因必须说清楚。
+
+**尝试与结果**：把服务以 `LOGIN_CONCURRENCY=1 / LOGIN_QUEUE_LIMIT=1` 启动，并发打 8 次登录，
+期望看到若干 503。实际拿到 `4 × 200 + 4 × 500` —— 而那 4 个 500 **全部是数据库错误**：
+
+```
+FATAL: could not open file "base/24576/2600": Permission denied   (42501)
+Can't reach database server at `127.0.0.1:5433`                    ← 数据库随后整体不可达
+```
+
+也就是说，**沙箱内的便携版 PostgreSQL 在并发登录下会崩溃**（本次会话已第 3 次复现，
+前两次分别出现在 S2 的并发计时与一次 C2 验证中）。数据库一崩，请求在**到达闸门之前**
+就 500 了，饱和条件根本构造不出来。把超时压到 1ms 重试一次，仍然是同样的结果 ——
+因为请求被数据库拖成了串行到达，彼此不重叠。
+
+**能确认的**：闸门本身工作正常 —— 日志里出现了
+`WARN [LoginGate] 登录闸门已满，请求进入队列（在途 1/1，排队 0）`，
+说明饱和检测与入队逻辑被真实触发过；4 次成功登录说明闸门没有破坏正常路径。
+
+**为什么接受这个缺口**：
+
+1. 闸门的调度语义是**纯逻辑**，已经被确定性单测钉死 —— 包括最容易写错的「排队超时后必须出队」
+   （不修这条，队列会逐渐泄漏直到所有人被 503，比没有闸门更糟）。
+2. HTTP 映射（`Errors.overloaded()` → 503 + `Retry-After: 1`）由过滤器单测覆盖。
+3. 剩下的唯一缝隙是「真实 HTTP 请求在真实饱和下返回 503」。这条缝隙的风险**低于**
+   「为了测它而把 CI 弄得不稳定」的风险 —— 所以 e2e 里只断言非饱和路径（DEM-14），
+   并在此处明确标注这个缺口，而不是假装测过了。
+
+**若要补齐**：需要一台 Docker 引擎可用的机器（`docker compose up` 起真实 PostgreSQL），
+再跑同样的并发脚本。命令与配置参数已写在 `.env.example` 的「登录并发闸门」一节。
+
 ---
 
 ## 8. 一句话总结
@@ -706,13 +744,15 @@ E2 的核心不是「加了 `take`」，而是**截断之后行为仍然正确**
 只做了配置结构解析（所有指令均被正确解析）。其余各项都有单测 / 真实数据库 / e2e / CI 的实证。
 仍未被任何自动化覆盖的，只剩 `docker compose up --build` 的容器编排路径本身。
 
-**P1 已启动**（本轮完成三项）：
+**P1 已启动**（本轮完成四项）：
 
 - **C4**（本地前置检查）—— `scripts/preflight.mjs` 8 项检查，且 CI 的 `hygiene` job **直接调用它**，
   本地与 CI 同源；6 项检查都做了负例验证（见 §7.1）。
 - **S5**（请求编号贯穿日志）—— 「客户端传入的编号 → 服务端日志」这条链路端到端实测闭合（见 §7.2）。
 - **E2**（详情/历史分页）—— 详情响应有上界且截断可见，完整时间线由 `/history` 按 `seq` 游标续取（见 §7.3）。
   至此报告开篇指出的「2 处会随数据量线性恶化的读路径」**全部消除**。
+- **E4**（登录并发闸门）—— 把 bcrypt 的 CPU 争用从「全站劣化」收窄为「登录排队或快速失败」（见 §7.4；
+  饱和路径只有单测覆盖，缺口已在那一节如实标注）。
 
-仍待做：E4（登录并发闸门），以及 S3 / S4 —— 后两项**都需要 Docker 引擎才能验证**，
-在本环境不具备条件。
+仍待做：S3（`web` 等 `api` 健康）与 S4（entrypoint 错误可诊断）—— 这两项**都需要 Docker 引擎才能验证**，
+在本环境不具备条件；以及 P2 清单（E5 / S6 / S7 / C3 / C5）。

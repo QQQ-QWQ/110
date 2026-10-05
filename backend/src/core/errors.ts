@@ -50,4 +50,13 @@ export const Errors = {
   /** 业务规则不满足（必填缺失、条件未全通过等） */
   validation: (msg: string, details?: unknown) =>
     new AppError('VALIDATION_FAILED', msg, 422, details),
+
+  /**
+   * 服务暂时过载：并发闸门已满（报告 §5.1 E4）。
+   *
+   * 用 503 而不是 429：这是**服务端容量**信号（某个昂贵操作的在途数已达上限），
+   * 不是针对某个调用方的配额。429 留给按账号/IP 的限流（S7）。
+   * 语义上它是「稍后重试能成功」，因此响应带 `Retry-After`。
+   */
+  overloaded: (msg = '服务繁忙，请稍后重试') => new AppError('SERVICE_BUSY', msg, 503),
 };

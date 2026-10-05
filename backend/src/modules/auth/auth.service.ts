@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import * as bcrypt from 'bcryptjs';
 import { Errors } from '../../core/errors';
+import { LoginGate } from '../../core/login-gate';
 import { PrismaService } from '../../core/prisma.service';
 import { SessionService } from '../../core/security/session.service';
 
@@ -15,6 +16,7 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly sessions: SessionService,
+    private readonly loginGate: LoginGate,
   ) {}
 
   async login(account: string, password: string): Promise<LoginResult> {
@@ -24,7 +26,15 @@ export class AuthService {
     if (!user) {
       throw Errors.unauthorized('账号或密码错误');
     }
-    const ok = await bcrypt.compare(password, user.passwordHash);
+
+    // 只有**密码校验**进闸门（报告 §5.1 E4）：
+    // bcryptjs 是纯 JS 实现（Dockerfile 为规避原生模块编译而刻意选择），
+    // cost=10 时单次数十至上百毫秒且**在 Node 单线程上烧 CPU**。并发登录会
+    // 争抢同一个事件循环，把**所有**接口一起拖慢。闸门把这件事收窄成
+    // 「登录排队或快速失败」，而不是「全站不可用」。
+    // 上面的数据库查询是便宜 I/O 且有连接池兜底，不塞进闸门 —— 多罩一层
+    // 只会降低吞吐，并不额外保护任何东西。
+    const ok = await this.loginGate.run(() => bcrypt.compare(password, user.passwordHash));
     if (!ok) {
       throw Errors.unauthorized('账号或密码错误');
     }

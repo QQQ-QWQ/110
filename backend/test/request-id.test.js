@@ -112,9 +112,14 @@ function makeHost({ locals = {}, method = 'GET', url = '/api/x' } = {}) {
   const res = {
     statusCode: 0,
     body: undefined,
+    headers: {},
     locals,
     status(c) {
       this.statusCode = c;
+      return this;
+    },
+    setHeader(name, value) {
+      this.headers[name.toLowerCase()] = value;
       return this;
     },
     json(b) {
@@ -177,4 +182,22 @@ test('异常过滤器：AppError 的 details 仍按原样回传（未被本次�
   assert.equal(res.statusCode, 422);
   assert.deepEqual(res.body.error.details, { field: 'title' });
   assert.equal(res.body.error.requestId, undefined);
+});
+
+test('★ 异常过滤器：503 带 Retry-After，其它 5xx 不带', () => {
+  const filter = new AllExceptionsFilter();
+
+  // 503 = 「稍后重试能成功」（例如登录闸门已满），因此给重试建议
+  const busy = makeHost({ locals: { requestId: 'rid-busy' } });
+  filter.catch(Errors.overloaded(), busy.host);
+  assert.equal(busy.res.statusCode, 503);
+  assert.equal(busy.res.body.error.code, 'SERVICE_BUSY');
+  assert.equal(busy.res.headers['retry-after'], '1');
+  assert.equal(busy.res.body.error.requestId, 'rid-busy');
+
+  // 500 = 故障，重试不一定有用，因此不给重试建议
+  const boom = makeHost({ locals: { requestId: 'rid-boom' } });
+  filter.catch(new Error('boom'), boom.host);
+  assert.equal(boom.res.statusCode, 500);
+  assert.equal('retry-after' in boom.res.headers, false);
 });

@@ -320,7 +320,7 @@ jobs:
           echo "✅ 全部 15 条领域 CHECK 约束均已创建"
 
   # ─────────────────────────────────────────────
-  # 端到端：起服务 + 跑 DEM-00 ~ DEM-08、DEM-11、DEM-12、DEM-13（架构报告 §5.3 C6）
+  # 端到端：起服务 + 跑 DEM-00 ~ DEM-08、DEM-11 ~ DEM-14（架构报告 §5.3 C6）
   #
   # 为什么必须有这个 job：其余四个 job 全部只做「静态」检查 ——
   #   · 单测覆盖纯逻辑（状态机/权限/不变量），不碰 HTTP 与数据库；
@@ -341,7 +341,7 @@ jobs:
   # 会陷入无法调试的循环。待本地 Docker 可用后再考虑追加。
   # ─────────────────────────────────────────────
   e2e:
-    name: 端到端（起服务 + DEM-00~08 + DEM-11~13）
+    name: 端到端（起服务 + DEM-00~08 + DEM-11~14）
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -432,7 +432,7 @@ jobs:
           tail -50 /tmp/api.log
           exit 1
 
-      - name: 端到端验证 DEM-00 ~ DEM-08 + DEM-11 ~ DEM-13
+      - name: 端到端验证 DEM-00 ~ DEM-08 + DEM-11 ~ DEM-14
         run: node scripts/e2e.mjs "http://127.0.0.1:${PORT}/api"
 
       - name: 失败时输出 API 日志（便于定位）

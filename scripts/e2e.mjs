@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * 端到端验证脚本 —— DEM-01 ~ DEM-08 + DEM-11（列表游标分页）+ DEM-12（请求编号）+ DEM-13（详情/历史分页）
+ * 端到端验证脚本 —— DEM-01 ~ DEM-08 + DEM-11（列表游标分页）+ DEM-12（请求编号）
+ *                    + DEM-13（详情/历史分页）+ DEM-14（登录并发闸门）
  *
  * 把《docs/测试与验证记录.md》§3 的手工 curl 步骤收敛成**一条可重复执行的命令**，
  * 输出「期望状态码 / 实际状态码」对照表，全部通过时退出码为 0。
@@ -645,6 +646,35 @@ async function main() {
   );
   const hHuge = await call('GET', `/requirements/${rid}/history?limit=99999`, { cookie: alice });
   check('DEM-13', '历史 limit 超上限 → 收敛到 200（而非报错）', 200, hHuge.json?.pageInfo?.limit);
+
+  // ══════════════════ DEM-14 登录并发闸门（E4）══════════════════
+  // 闸门的目的不是让登录更快，而是**把故障域收窄**：bcryptjs 是纯 JS 实现，
+  // 密码校验烧 Node 单线程事件循环，并发登录会把**所有**接口一起拖慢。
+  //
+  // 这里只断言「闸门不破坏正常使用」。饱和（队列满 → 503）与排队超时（→ 503）
+  // 的语义由单测**确定性**覆盖（backend/test/semaphore.test.js），不在 e2e 里
+  // 制造真正的饱和 —— 那既慢又不稳定，而且会把「环境慢」误报成「闸门坏了」。
+  const burst = await Promise.all(
+    Array.from({ length: 8 }, () =>
+      call('POST', '/auth/login', { body: { account: 'alice', password: PASSWORD } }),
+    ),
+  );
+  check(
+    'DEM-14',
+    '8 次并发登录全部 200（闸门不破坏正常使用）',
+    8,
+    burst.filter((r) => r.status === 200).length,
+  );
+  check(
+    'DEM-14',
+    '★ 每次登录得到独立会话（未串号）',
+    8,
+    new Set(burst.map((r) => r.cookie).filter(Boolean)).size,
+  );
+  const afterBurst = await call('POST', '/auth/login', {
+    body: { account: 'alice', password: PASSWORD },
+  });
+  check('DEM-14', '突发之后仍能正常登录（许可未泄漏）', 200, afterBurst.status);
 
   // ══════════════════ 输出报告 ══════════════════
 

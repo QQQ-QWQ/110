@@ -66,6 +66,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
       this.logger.error(`${where} → ${status} ${code}`);
     }
 
+    // 503 表示「稍后重试能成功」（例如登录闸门已满），按 HTTP 语义给出重试建议。
+    // 其它 5xx 是故障，重试不一定有用，因此不给。
+    if (status === 503) {
+      response.setHeader('Retry-After', '1');
+    }
+
     response.status(status).json({
       error: {
         code,

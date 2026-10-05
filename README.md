@@ -188,6 +188,7 @@ docker compose up --build
 ├── scripts/
 │   ├── preflight.mjs           # 本地前置检查：CI 机械检查的一键复跑（C4）
 │   ├── check-migrations-immutable.mjs  # 已应用迁移不可修改检测（C3，CI migrations job 调用）
+│   ├── verify-entrypoint.mjs   # 用假 npx 驱动真实 entrypoint，验证故障分流（S4，CI backend job 调用）
 │   ├── e2e.mjs                 # 端到端验证脚本（DEM-01~08 + DEM-11~16，一条命令产出对照表）
 │   └── verify-retention.mjs    # 数据保留清理的真实库验证（S1）
 │
@@ -297,7 +298,7 @@ CI 的 `hygiene` job **直接调用同一个脚本**，因此「本地 preflight
 | --- | --- | --- | --- |
 | L1 编辑器 | 保存时 | 统一缩进/行尾/编码 | `.editorconfig` |
 | L2 版本控制 | 克隆/提交时 | 强制 LF，防止容器脚本被 CRLF 破坏 | `.gitattributes` |
-| L3 CI | 开 PR 时 | 格式检查 + 静态检查 + 单元测试 + 后端构建 / Prisma schema 校验与格式规范 + 前端类型检查/构建 + 迁移可回放（空库重放 + 15 条 CHECK 约束核验）+ **迁移漂移检测（schema ↔ migrations 一致性）** + **已应用迁移不可修改检测** + **端到端（起真实服务 + 跑 DEM-00~08、DEM-11~16 共 93 项断言 + 数据保留清理验证）** + 仓库卫生（行尾/密钥/构建产物/lockfile） | `.github/workflows/ci.yml` |
+| L3 CI | 开 PR 时 | 格式检查 + 静态检查 + 单元测试 + 后端构建 / Prisma schema 校验与格式规范 + **entrypoint 故障分流验证** + 前端类型检查/构建 + 迁移可回放（空库重放 + 15 条 CHECK 约束核验）+ **迁移漂移检测（schema ↔ migrations 一致性）** + **已应用迁移不可修改检测** + **端到端（起真实服务 + 跑 DEM-00~08、DEM-11~16 共 93 项断言 + 数据保留清理验证）** + 仓库卫生（行尾/密钥/构建产物/lockfile） | `.github/workflows/ci.yml` |
 | L4 人工 | PR 审查 | 正确性、安全、并发、可读性、测试覆盖（风格已由 L1~L3 覆盖，不占用人工带宽） | `.github/PULL_REQUEST_TEMPLATE.md`、`.github/CODEOWNERS` |
 
 **自动化质量门禁现状**
@@ -382,7 +383,7 @@ P0 六项 —— 全部完成：
 | E3 解除横扩阻塞 | 去 `container_name`；nginx `resolver` + 变量式 `proxy_pass` | ⚠️ 仅配置结构校验（无 Docker 引擎 / nginx 二进制） |
 | C2 迁移漂移检测 | `prisma migrate diff --exit-code` | ✅ 本地双向验证 + run #10 |
 
-P1 —— 全部完成（5 项）：
+P1 —— 全部完成（6 项）：
 
 | 项 | 落地内容 | 验证 |
 | --- | --- | --- |
@@ -391,6 +392,7 @@ P1 —— 全部完成（5 项）：
 | E2 详情/历史分页 | 详情的事件与提交**有上界且截断可见**（回传总数与 `hasMore`）；`/history` 按 `seq` 游标续取 | ✅ 单测 7 + e2e DEM-13 18 项（含「详情窗口是全量时间线的尾部」「逐页取完总数自洽」） |
 | E4 登录并发闸门 | 信号量**只罩 `bcrypt.compare`**（那才是烧 CPU 的部分）；饱和 → 503 + `Retry-After` | ✅ 单测 12 + e2e DEM-14 3 项；⚠️ **饱和路径只有单测覆盖**（沙箱内 PostgreSQL 在并发下反复崩溃），缺口已在报告 §7.4 如实标注 |
 | S3 `web` 等 `api` 健康 | `web.depends_on` 改为 `condition: service_healthy`；`api` 的 HEALTHCHECK 探 `/api/health/ready` | ⚠️ 仅 `docker-compose config` 结构校验（无 Docker 引擎，未起容器验证「无 502 窗口」） |
+| S4 entrypoint 错误可诊断 | 捕获并打印 `migrate deploy` 完整输出（原写法把 stderr 吞掉）；**迁移类错误立即失败**、连接类才重试；`scripts/verify-entrypoint.mjs` 用假 `npx` 驱动真实脚本 | ✅ **17 项断言全通过**，已接入 CI 的 backend job；⚠️ 验证的是**脚本控制流**，不是容器编排 |
 
 P2 —— 已完成 4 项：
 

@@ -189,6 +189,7 @@ docker compose up --build
 │   ├── preflight.mjs           # 本地前置检查：CI 机械检查的一键复跑（C4）
 │   ├── check-migrations-immutable.mjs  # 已应用迁移不可修改检测（C3，CI migrations job 调用）
 │   ├── verify-entrypoint.mjs   # 用假 npx 驱动真实 entrypoint，验证故障分流（S4，CI backend job 调用）
+│   ├── check-audit.mjs         # 依赖漏洞扫描：阻断 high/critical，允许显式且有日期的例外（P3）
 │   ├── e2e.mjs                 # 端到端验证脚本（DEM-01~08 + DEM-11~16，一条命令产出对照表）
 │   └── verify-retention.mjs    # 数据保留清理的真实库验证（S1）
 │
@@ -298,7 +299,7 @@ CI 的 `hygiene` job **直接调用同一个脚本**，因此「本地 preflight
 | --- | --- | --- | --- |
 | L1 编辑器 | 保存时 | 统一缩进/行尾/编码 | `.editorconfig` |
 | L2 版本控制 | 克隆/提交时 | 强制 LF，防止容器脚本被 CRLF 破坏 | `.gitattributes` |
-| L3 CI | 开 PR 时 | 格式检查 + 静态检查 + 单元测试 + 后端构建 / Prisma schema 校验与格式规范 + **entrypoint 故障分流验证** + 前端类型检查/构建 + 迁移可回放（空库重放 + 15 条 CHECK 约束核验）+ **迁移漂移检测（schema ↔ migrations 一致性）** + **已应用迁移不可修改检测** + **端到端（起真实服务 + 跑 DEM-00~08、DEM-11~16 共 93 项断言 + 数据保留清理验证）** + 仓库卫生（行尾/密钥/构建产物/lockfile） | `.github/workflows/ci.yml` |
+| L3 CI | 开 PR 时 | 格式检查 + 静态检查 + 单元测试 + 后端构建 / Prisma schema 校验与格式规范 + **entrypoint 故障分流验证** + **依赖漏洞扫描** + 前端类型检查/构建 + 迁移可回放（空库重放 + 15 条 CHECK 约束核验）+ **迁移漂移检测（schema ↔ migrations 一致性）** + **已应用迁移不可修改检测** + **端到端（起真实服务 + 跑 DEM-00~08、DEM-11~16 共 93 项断言 + 数据保留清理验证）** + 仓库卫生（行尾/密钥/构建产物/lockfile） | `.github/workflows/ci.yml` |
 | L4 人工 | PR 审查 | 正确性、安全、并发、可读性、测试覆盖（风格已由 L1~L3 覆盖，不占用人工带宽） | `.github/PULL_REQUEST_TEMPLATE.md`、`.github/CODEOWNERS` |
 
 **自动化质量门禁现状**
@@ -403,7 +404,7 @@ P2 —— 已完成 4 项：
 | C5 分支保护声明 | `docs/代码审查标准与流程.md` §6.3.1 明确 `main` 的 6 个 required status checks 与配套约束 | ⚠️ **文档项** —— 仓库内无法证明 GitHub 侧已配置，验收时需打开 `Settings → Branches` 当场核对 |
 | S7 登录失败限流 | 键 = **账号 + IP**；5 次 / 10 分钟 → 封禁 5 分钟；超限 → **429 + `Retry-After`**（与 E4 的 503 刻意区分「配额」与「容量」） | ✅ 单测 15 + e2e DEM-16 6 项；手工确认响应 `429` + `Retry-After: 298`；⚠️ **内存实现**，多副本下计数不共享（报告 §7.7 已标注） |
 
-**已知质量缺口（诚实披露）**：已有 `scripts/preflight.mjs` 可一键复跑 CI 的机械检查，但**尚未把它挂到 `pre-commit` / `pre-push` 钩子上**（目前仍需开发者主动跑），也尚未接入依赖漏洞扫描（`npm audit` / Dependabot），见标准 §6.5。单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互；跨层端到端行为由 `scripts/e2e.mjs` 覆盖（DEM-00~08 + DEM-11~16，已实跑 **93/93** 通过），并**已接入 CI**（`e2e` job，见上）。`docker compose up --build` 三容器一键启动、nginx 反代与命名卷挂载尚未实测（本机 Docker 引擎不可用）—— 这是当前门禁体系**最后一处空白**：`compose` job 只校验配置文件的语法与变量插值，并不真正起容器。**E3 的 nginx 改动因此只做了结构解析校验，语义未经验证** —— 若 `docker compose up` 后 `/api/` 返回 502，应优先检查该处（`resolver` + 变量式 `proxy_pass`）。DEM-09（停库降级为通用 500）与 DEM-10（重启后数据不丢）需要操作数据库进程，无法在 `e2e` job 内完成，仍属人工验证项（DEM-10 以「重启数据库进程」替代「容器重建」，未验证命名卷保留行为）。未做并发压测。前端组件测试为 SSR 渲染断言，不含 jsdom 点击交互模拟。
+**已知质量缺口（诚实披露）**：已有 `scripts/preflight.mjs` 可一键复跑 CI 的机械检查，但**尚未把它挂到 `pre-commit` / `pre-push` 钩子上**（目前仍需开发者主动跑）。依赖漏洞扫描已接入（`scripts/check-audit.mjs`，阻断 high/critical），但**有 2 条已豁免的例外**：① 后端 3 个 high 全部来自 `deepmerge-ts`（经 `prisma` → `@prisma/config` 传入，**精确锁定 7.1.5**，唯一修复是升到 Prisma 8 大版本）—— 漏洞需要合并攻击者可控的递归对象图，而 Prisma 配置来自仓库内静态文件且只在构建/启动时作为 CLI 使用，**不在 HTTP 请求路径上**；② 前端 2 个 moderate 来自 `vitest`（**仅开发期测试工具**，不进生产镜像，修复需破坏性升级）。两条豁免都写明了理由与复核时机，且**豁免消失时门禁会失败**提醒删除。另外 Dependabot 的**安全更新开关**（仓库设置项，不在配置文件里）需在交付时确认已启用。单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互；跨层端到端行为由 `scripts/e2e.mjs` 覆盖（DEM-00~08 + DEM-11~16，已实跑 **93/93** 通过），并**已接入 CI**（`e2e` job，见上）。`docker compose up --build` 三容器一键启动、nginx 反代与命名卷挂载尚未实测（本机 Docker 引擎不可用）—— 这是当前门禁体系**最后一处空白**：`compose` job 只校验配置文件的语法与变量插值，并不真正起容器。**E3 的 nginx 改动因此只做了结构解析校验，语义未经验证** —— 若 `docker compose up` 后 `/api/` 返回 502，应优先检查该处（`resolver` + 变量式 `proxy_pass`）。DEM-09（停库降级为通用 500）与 DEM-10（重启后数据不丢）需要操作数据库进程，无法在 `e2e` job 内完成，仍属人工验证项（DEM-10 以「重启数据库进程」替代「容器重建」，未验证命名卷保留行为）。未做并发压测。前端组件测试为 SSR 渲染断言，不含 jsdom 点击交互模拟。
 
 ---
 

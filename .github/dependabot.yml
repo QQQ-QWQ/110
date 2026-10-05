@@ -1,0 +1,87 @@
+# ============================================================
+# Dependabot 配置（报告 §6.5 P3）
+#
+# 为什么需要它：CI 里的 `scripts/check-audit.mjs` 只能**拦住**高危漏洞，
+# 它不会主动把依赖升上去。没有 Dependabot 的话，`npm audit` 里的 moderate
+# 会一直躺在那里，直到有人想起来手动升级 —— 而「想不起来」是常态。
+#
+# 设计取舍：
+#   · **每周一次**，不是每天：小项目每天开 PR 会淹没人（也会消耗 Actions 额度）。
+#   · **分组**：把 minor/patch 合成一个 PR。逐个依赖开 PR 会让 5 个 PR 同时躺着，
+#     而它们每个都要重跑一遍 CI。
+#   · **major 不自动升**：单独成 PR 且需要人工评估 ——
+#     本仓库就有先例：`prisma` 的大版本会改动迁移语义（见 check-audit.mjs 的豁免说明）。
+# ============================================================
+
+version: 2
+
+updates:
+  # ---------- 后端依赖 ----------
+  - package-ecosystem: npm
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore(deps)'
+      include: scope
+    labels:
+      - dependencies
+    groups:
+      # minor / patch 合成一个 PR（major 会被排除，单独开）
+      minor-and-patch:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+    ignore:
+      # Prisma 大版本会改动迁移语义与生成的 Client，必须人工评估后手动升。
+      # 本仓库还依赖它精确锁定的传递依赖（见 scripts/check-audit.mjs 的豁免说明）。
+      - dependency-name: prisma
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@prisma/client'
+        update-types: ['version-update:semver-major']
+
+  # ---------- 前端依赖 ----------
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore(deps)'
+      include: scope
+    labels:
+      - dependencies
+    groups:
+      minor-and-patch:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+    ignore:
+      # vitest 4 → 5 是破坏性升级（已知的 moderate 漏洞需要它才能修），
+      # 由人决定何时随测试框架一起升，而不是被自动 PR 推着走。
+      - dependency-name: vitest
+        update-types: ['version-update:semver-major']
+
+  # ---------- GitHub Actions ----------
+  # action 版本过期是供应链风险的常见入口（旧版本可能已被弃用或存在已知问题）。
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: 'chore(ci)'
+    labels:
+      - dependencies
+      - ci
+    groups:
+      actions:
+        patterns: ['*']

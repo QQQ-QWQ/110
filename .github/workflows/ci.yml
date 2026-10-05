@@ -50,6 +50,17 @@ jobs:
       - name: 运行仓库卫生检查（scripts/preflight.mjs --mechanical）
         run: node scripts/preflight.mjs --mechanical
 
+      # ── P3 依赖漏洞扫描 ────────────────────────────────────────────
+      # 不直接用 `npm audit --audit-level=high`：本仓库有一个已知且**无法非破坏修复**
+      # 的 high（deepmerge-ts 经 prisma 传入，唯一修复是升到 Prisma 8 大版本）。
+      # 直接用 npm audit 当门禁会让 CI 永久变红 —— 而永远红的门禁等于没有门禁。
+      # 脚本的做法是「阻断 high/critical，但允许显式、有日期的例外」，
+      # 并且会在例外已消失（依赖被修好）时失败，提醒把它删掉。
+      #
+      # 不需要 node_modules：npm audit 只读 package.json + package-lock.json。
+      - name: 依赖漏洞扫描（报告 §6.5 P3）
+        run: node scripts/check-audit.mjs
+
   # ─────────────────────────────────────────────
   # 后端：类型检查 + 构建 + Prisma 校验
   # ─────────────────────────────────────────────

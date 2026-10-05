@@ -54,6 +54,11 @@ updates:
       # 这里再挡住 major，确保「半升级」不会以自动 PR 的形式出现。
       - dependency-name: '@nestjs/*'
         update-types: ['version-update:semver-major']
+      # TypeScript 7 跨两个大版本，且**前后端的 typescript 版本必须一致**
+      # （否则类型声明互相打架）。PR #14 实测三处红（后端构建 / 迁移可回放 / 端到端）。
+      # 要升就前后端一起升并完整回归。
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major']
 
   # ---------- 前端依赖 ----------
   - package-ecosystem: npm
@@ -103,6 +108,18 @@ updates:
       # vitest 4 → 5 是破坏性升级（已知的 moderate 漏洞需要它才能修），
       # 由人决定何时随测试框架一起升，而不是被自动 PR 推着走。
       - dependency-name: vitest
+        update-types: ['version-update:semver-major']
+      # Vite 6 → 8 跨两个大版本，会改构建管线与插件 API。它与 @vitejs/plugin-vue、
+      # vitest 必须**成套升级** —— 单独升 vite 必然失败（PR #19 已实测）。
+      - dependency-name: vite
+        update-types: ['version-update:semver-major']
+      # vue-router 是应用骨架（3 个页面 + 登录跳转都依赖它），大版本会改 API 与
+      # 导航守卫行为，必须人工评估 + 完整回归（PR #15 已实测红）。
+      - dependency-name: vue-router
+        update-types: ['version-update:semver-major']
+      # TypeScript 7 有明确破坏性变更，且**前后端的 typescript 版本必须一致**
+      # （否则类型声明互相打架）—— 两个 PR（#21 / #14）都因此失败。
+      - dependency-name: typescript
         update-types: ['version-update:semver-major']
 
   # ---------- GitHub Actions ----------

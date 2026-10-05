@@ -295,6 +295,120 @@ jobs:
           echo "✅ 全部 15 条领域 CHECK 约束均已创建"
 
   # ─────────────────────────────────────────────
+  # 端到端：起服务 + 跑 DEM-00 ~ DEM-08（架构报告 §5.3 C6）
+  #
+  # 为什么必须有这个 job：其余四个 job 全部只做「静态」检查 ——
+  #   · 单测覆盖纯逻辑（状态机/权限/不变量），不碰 HTTP 与数据库；
+  #   · 后端 job 只 build，不起服务；
+  #   · migrations job 只校验「迁移能在空库跑通」与「约束存在」，
+  #     **不校验种子能否写入**。
+  #
+  # 2026-10-05 的首次真实端到端实跑，立刻暴露了两个上述检查全都漏掉的缺陷：
+  #   ① seed 循环外键写序错误 → P2003 → 因 entrypoint 的 set -e 放大为
+  #      「api 容器起不来」，即「一键启动」交付要求实际不可用（P0）；
+  #   ② 版本过期 412 被状态冲突 409 抢先，与文档和脚本均不一致（P1）。
+  # 两者都只在服务真正跑起来时才暴露 —— 所以这一层不能省。
+  #
+  # 注意：本 job 用 postgres service + 直接运行编译产物，而不是
+  # `docker compose up`。原因是前者可在本地逐条复现、失败时能定位；
+  # 后者虽然还能顺带验证「一键启动」，但一旦在 CI 里失败，
+  # 本环境拿不到 job 日志（公开仓库的 logs 接口也要求管理员权限），
+  # 会陷入无法调试的循环。待本地 Docker 可用后再考虑追加。
+  # ─────────────────────────────────────────────
+  e2e:
+    name: 端到端（起服务 + DEM-00~08）
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app_password
+          POSTGRES_DB: demand_acceptance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d demand_acceptance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://app:app_password@localhost:5432/demand_acceptance?schema=public
+      SEED_PASSWORD: Passw0rd!
+      PORT: '3100'
+      COOKIE_SECURE: 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: 安装依赖
+        working-directory: backend
+        run: npm ci --no-audit --no-fund
+
+      # 显式 generate，不依赖 @prisma/client 的 postinstall 副作用：
+      #   · `nest build` 会做类型检查，未生成的 Client 会让构建直接失败；
+      #   · `node dist/seed.js` 运行期也需要真实的 Client。
+      # 与 backend job 保持同一套命令，避免「两个 job 的构建方式不一致」。
+      #
+      # seed 失败会以退出码 1 结束；配合 set -e 直接打红本步骤。
+      # 这一步本身就是「api 容器能否启动」的等价验证。
+      - name: 生成 Client + 迁移 + 构建 + 写入种子数据
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          npx prisma generate
+          npx prisma migrate deploy
+          npm run build
+          node dist/seed.js
+
+      # 防御性断言：种子「退出码为 0」不等于「数据真的写全了」。
+      # 这正是缺陷 ① 的回归守卫 —— 当时的表现就是第 3 条需求没写进去。
+      - name: 校验种子数据完整（3 用户 / 3 需求 / 当前提交指针已回填）
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          node -e 'const {PrismaClient}=require("@prisma/client");
+          const p=new PrismaClient();
+          (async()=>{
+            const u=await p.user.count();
+            const r=await p.requirement.count();
+            const ir=await p.requirement.findFirst({where:{state:"IN_REVIEW"}});
+            console.log("users="+u+" requirements="+r+" inReviewPointer="+(ir&&ir.currentSubmissionId));
+            if(u!==3||r!==3){console.error("::error::种子数据不完整（期望 3 用户 / 3 需求）");process.exit(1);}
+            if(!ir||!ir.currentSubmissionId){console.error("::error::待验收需求的 current_submission_id 未回填");process.exit(1);}
+            await p.$disconnect();
+          })().catch(e=>{console.error(e);process.exit(1);});'
+
+      - name: 启动 API 并等待就绪
+        working-directory: backend
+        run: |
+          set -euo pipefail
+          node dist/main.js > /tmp/api.log 2>&1 &
+          for i in $(seq 1 40); do
+            if curl -sf "http://127.0.0.1:${PORT}/api/health" >/dev/null; then
+              echo "API 就绪（第 ${i} 次探测）"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::API 未在 40 秒内就绪"
+          tail -50 /tmp/api.log
+          exit 1
+
+      - name: 端到端验证 DEM-00 ~ DEM-08
+        run: node scripts/e2e.mjs "http://127.0.0.1:${PORT}/api"
+
+      - name: 失败时输出 API 日志（便于定位）
+        if: failure()
+        run: tail -100 /tmp/api.log || true
+
+  # ─────────────────────────────────────────────
   # Compose 配置合法性
   # ─────────────────────────────────────────────
   compose:

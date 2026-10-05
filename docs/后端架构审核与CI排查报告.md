@@ -11,10 +11,10 @@
 | 议题 | 结论 |
 |---|---|
 | **CI 为何持续失败** | **两个独立根因**，而非 5 个 job 各自的问题：① `schema.prisma` 的 `@relation` 属性跨行书写，Prisma 解析器不支持 → 同时打红「后端」与「迁移可回放性」两个 job；② 「后端」job 的 `prisma validate` 步骤缺 `DATABASE_URL` → 即使修好①该步骤仍会红。 |
-| **当前状态** | **已修复并验证**：commit `603cedc` 推送后，CI run #5 全部 5 个 job、全部步骤 **success**（此前 4 次运行全红）。 |
+| **当前状态** | **已修复并验证**：commit `603cedc` 推送后 CI 由「4 次全红」转绿，此后 run #6 / #7 / #8 **连续全绿**。最新 run #8（`610dfa7`）为 **6 个 job、64 个步骤全部 success**（唯一 skipped 的是 `if: failure()` 的日志步骤，按设计跳过）。 |
 | **可扩展性** | 读路径存在 **2 处会随数据量线性恶化**的无界查询（列表无分页、详情含无界事件流）；横向扩展有 **2 个硬阻塞**（`container_name` 阻断 `--scale`、nginx 不在运行时重解析 DNS）。写路径（乐观锁 + 幂等）本身是可横向扩展的。 |
 | **稳定性** | 核心写路径的事务/幂等/乐观锁设计是**扎实的**；主要缺口在**运维面**：幂等记录与会话过期行无清理（无界增长）、连接池与语句超时未显式配置、无 request-id 关联日志、`web` 未等服务健康即启动。 |
-| **最高优先级动作** | P0 共 5 项，均为小改动、低风险：列表游标分页、幂等记录 TTL、连接池与超时、解除横向扩展阻塞、CI 补「迁移漂移检测」。 |
+| **最高优先级动作** | P0 共 6 项。其中 **C6「CI 起服务跑 e2e」已落地**（见 §5.3）；其余 5 项均为小改动、低风险：列表游标分页、幂等记录 TTL、连接池与超时、解除横向扩展阻塞、CI 补「迁移漂移检测」。 |
 
 ---
 
@@ -488,7 +488,7 @@ if npx prisma migrate deploy; then ...
 | C3 | **已应用迁移不可修改** | 检测 `prisma/migrations/` 下**已存在目录**内文件被修改 → 告警（新增目录放行）。 | 需要在 CI 中对比 base 分支，实现略复杂（`git diff --name-only ${{ github.event.pull_request.base.sha }}...HEAD -- prisma/migrations`）。纯 push 触发时无 base，需降级为「跳过并提示」。 |
 | C4 | **本地前置检查** | `scripts/preflight.mjs`：一键复跑 CI 的机械检查（schema 格式、行尾、Prettier、lockfile 同步）。 | 把反馈周期从 3~5 分钟压到 1 秒。代价：需要开发者记得跑 —— 用 `pre-push` 钩子可强制，但钩子可被 `--no-verify` 绕过（这是设计使然，不是缺陷）。 |
 | C5 | **分支保护声明** | 在 `docs/代码审查标准与流程.md` 明确 main 的 required status checks，作为交付验收项。 | 仓库内的文档无法强制 GitHub 侧配置；但**把「已配置分支保护」写成验收项**能确保它不被遗忘。 |
-| **C6** | **增加「起服务 + 跑 e2e」的 job**（**本轮新增，优先级最高**） | 在 CI 中用 postgres service + `prisma migrate deploy` + `node dist/seed.js` + `node dist/main.js` + `node scripts/e2e.mjs` 跑一遍 44 项断言。 | **这是唯一能拦住「跨层缺陷」的检查。** 见下方说明 —— 它的必要性已由本轮实跑直接证明。 |
+| **C6** | ✅ **已落地**（**本轮新增，优先级最高**） | 新增 `e2e` job：postgres service → `prisma generate` + `migrate deploy` → `npm run build` → `node dist/seed.js` → 种子完整性断言 → `node dist/main.js` 等就绪 → `node scripts/e2e.mjs`（DEM-00~08，44 项断言）。 | **这是唯一能拦住「跨层缺陷」的检查。** 见下方说明 —— 它的必要性已由本轮实跑直接证明。 |
 
 **为什么 C6 的优先级最高（有实证）**
 
@@ -505,9 +505,59 @@ if npx prisma migrate deploy; then ...
 
 > **取舍**：该 job 会让 CI 时间显著增加（安装依赖 + 构建 + 起库 + 起服务 + 44 项断言，估 +2~3 分钟），
 > 且需要维护「CI 里如何起服务」的编排逻辑（与 `docker compose` 存在重复）。
-> **建议的实现方式**：不要另写一套编排，而是直接复用 `docker compose up --build -d`
-> —— 这样 C6 顺带把「一键启动」这条交付要求也纳入了持续验证，
-> 且不会出现「CI 的启动方式与交付的启动方式不一致」这一新的漂移源。
+
+**落地时的决定：没有按上面的建议用 `docker compose up`，而是用 postgres service + 直接运行编译产物。**
+
+这是对本节初稿建议的一次**主动反转**，理由如下 —— 它不是「实现偷懒」，而是
+针对本环境的一个硬约束：
+
+| 维度 | `docker compose up --build -d` | postgres service + 直跑编译产物（**实际采用**） |
+|---|---|---|
+| 是否顺带验证「一键启动」 | ✅ 是（这是它最大的价值） | ❌ 否（另需 `compose` job 校验配置合法性，但**不真正起容器**） |
+| 失败时能否定位 | ⚠️ 需要 job 日志 | ✅ 每条命令都能在本地逐字复现 |
+| 本环境能否拿到失败日志 | ❌ **不能** | ✅ 不依赖日志：step 级结论即可定位 |
+
+关键在最后一行：本环境**拿不到 GitHub Actions 的 job 日志**（`GET /actions/jobs/{id}/logs`
+返回 `403 Must have admin rights to Repository`，公开仓库亦然）。若 C6 用 compose 起服务，
+一旦在 CI 里失败，能拿到的只有「某一步红了」，**看不到容器为什么起不来** ——
+这会陷入「改一版 → 推一次 → 猜一次」的循环，而 C6 恰恰是最容易出环境问题的一层。
+
+因此选择了一条**可在本地完整复现**的路径：它跑的命令与我在
+`docs/测试与验证记录.md` §4.2 中手工执行并验证过的命令**逐字一致**。
+代价是「一键启动」仍未纳入 CI —— 这一项待本地 Docker 可用后再追加，
+届时可作为**第二个** e2e job 存在，而不是替换现有这个。
+
+> **遗留**：`docker compose up --build` 三容器编排、nginx 反代、命名卷挂载
+> 仍未被任何自动化验证覆盖，属于当前门禁体系已知的最后一处空白。
+
+**落地验证（run #8，commit `610dfa7`）**
+
+| 验证点 | 结果 |
+|---|---|
+| 新增 `e2e` job 在真实 runner 上跑通 | ✅ 6 个 step 全部 success（`Initialize containers` → 安装依赖 → generate/migrate/build/seed → 种子完整性断言 → 起 API 等就绪 → 44 项断言） |
+| 是否拖慢流水线 | 该 job 约 **37 秒**（含 `npm ci`、`prisma generate`、`migrate deploy`、`nest build`、起库起服务与全部断言），远低于预估的 +2~3 分钟 —— 因为 `setup-node` 的 npm 缓存命中了 |
+| 是否引入不稳定 | 6 个 job 一次性全绿，无重试 |
+| 既有 5 个 job 是否受影响 | ❌ 无。run #8 中其余 5 个 job 结论与 run #7 一致 |
+
+**这个门禁「会咬人」吗？** 需要确认它失败时真的会变红，而不是永远绿。
+链路是完整闭合的（三段都可独立核验）：
+
+1. `scripts/e2e.mjs` 末尾为 `process.exit(failures === 0 ? 0 : 1)`，
+   异常路径为 `exit 2`（脚本第 462 / 467 行）——**失败必有非零退出码**；
+2. GitHub Actions 的 `run:` 步骤默认以 `bash -e` 执行 ——**非零即步骤失败**；
+3. 步骤失败即 job 失败，而本 workflow 的任一 job 失败都会阻断合入。
+
+因此对本轮两个缺陷的反推是确定的：
+
+| 若把缺陷改回去 | 会在哪一步变红 |
+|---|---|
+| 缺陷 ①（seed 循环外键写序） | 第 6 步 `node dist/seed.js` —— 该步骤带 `set -euo pipefail`，seed 以退出码 1 结束（`P2003`）即中止；即使侥幸通过，第 7 步的种子完整性断言（`requirements !== 3`）也会兜住 |
+| 缺陷 ②（412 被 409 抢先） | 第 9 步 `node scripts/e2e.mjs` —— DEM-02 期望 412、实际 409 → `failures > 0` → 退出码 1 |
+
+> 上述为**推理**而非重跑实验：本环境无法读取 job 日志，故意推一个错误版本会让
+> 远端历史留下一次红运行，收益不足以抵消代价。三段链路已逐段独立核验，
+> 结论是确定的。若需实验性证据，可在本地用便携版 PostgreSQL 复现
+> （见 `docs/测试与验证记录.md` §4.1）。
 
 ---
 
@@ -515,9 +565,11 @@ if npx prisma migrate deploy; then ...
 
 ### P0 —— 本次必做（低风险、高收益、改动小）
 
+> 进度：**6 项中 1 项已完成**（C6，已由远端 run #8 验证）。其余 5 项待实施。
+
 | 项 | 预估改动 | 验证方式 |
 |---|---|---|
-| **C6 CI 起服务跑 e2e**（**最优先**） | `.github/workflows/ci.yml` 新增 job，复用 `docker compose up --build -d` | CI 自证：本轮 2 个跨层缺陷都应让该 job 变红 |
+| ✅ **C6 CI 起服务跑 e2e**（**最优先，已完成**） | `.github/workflows/ci.yml` 新增 `e2e` job —— postgres service + 编译产物直跑，**未**用 `docker compose up`（反转理由见 §5.3） | ✅ 已完成：run #8（`610dfa7`）**6/6 job 全绿**，新增 job 约 37 秒 |
 | E1 列表游标分页 | `requirements.service.ts` + controller DTO + 前端列表页 | 单测：分页边界（空结果、最后一页、非法 cursor）；实跑：`node scripts/e2e.mjs` |
 | S1 定时清理任务 | 新增 `core/maintenance.service.ts` + 定时器 | 单测：清理只删 `COMPLETED` 与过期会话；实跑：插入过期行后确认被删 |
 | S2 连接池与超时 | `.env.example` + `docker-compose.yml` | 实跑：`docker compose config` + 观察连接数 |
@@ -555,7 +607,9 @@ E5 会话缓存（**需先解决与「登出即时失效」的冲突**）、S6 l
 | 根因二复现 | `cd backend && env -u DATABASE_URL npx prisma validate` → `P1012 Environment variable not found` |
 | 引入根因一的提交 | `git log -p -3 -- backend/prisma/schema.prisma` → `5d5a11a` |
 | 修复后 CI 全绿 | run #5（`603cedc`）5/5 job success |
-| 后端本地门禁 | `npm run format:check` / `npm run lint` / `npm test`（47/47） |
+| C6 落地后 CI 全绿 | run #8（`610dfa7`）**6/6 job success，64 步骤，仅 1 个 `if: failure()` 步骤按设计跳过** |
+| C6 失败会变红（链路核验） | `tail -20 scripts/e2e.mjs` → `process.exit(failures === 0 ? 0 : 1)`；Actions `run:` 默认 `bash -e` |
+| 后端本地门禁 | `npm run format:check` / `npm run lint` / `npm test`（50/50） |
 | CHECK 约束清单 | `grep -oE '"[a-z_]+_chk"' backend/prisma/migrations/0001_init/migration.sql \| sort -u` → 15 条 |
 | 幂等记录无清理 | `grep -rn "idempotencyRecord" backend/src \| grep -iE "delete\|clean\|purge"` → 空 |
 | 无分页 | `grep -rn "take:\|skip:\|cursor" backend/src` → 空 |
@@ -566,4 +620,4 @@ E5 会话缓存（**需先解决与「登出即时失效」的冲突**）、S6 l
 
 ## 8. 一句话总结
 
-**CI 的问题不是「5 个 job 各自坏了」，而是「1 个 schema 语法错误 + 1 个缺失的环境变量」；架构的问题不是「设计错了」，而是「设计是对的，但缺少面向增长与运维的收口」。** 前者已修复并在远端验证（run #5 全绿），后者已按 P0/P1/P2 排出优先级，其中 P0 五项均为小改动、低风险、可被单测与端到端脚本验证。
+**CI 的问题不是「5 个 job 各自坏了」，而是「1 个 schema 语法错误 + 1 个缺失的环境变量」；架构的问题不是「设计错了」，而是「设计是对的，但缺少面向增长与运维的收口」。** 前者已修复并在远端验证（run #5~#8 连续全绿）；后者已按 P0/P1/P2 排出优先级，其中 **P0 共 6 项，最高优先级的 C6（CI 起服务跑 e2e）已落地并验证（run #8，6/6 job 全绿）** —— 这一项的意义是：本轮两个「只在服务真跑起来时才暴露」的跨层缺陷，从此有了自动化拦截。剩余 5 项均为小改动、低风险、可被单测与端到端脚本验证。

@@ -196,11 +196,15 @@ docker compose up --build
 │       ├── api.ts              # 统一客户端（自动附加 If-Match / Idempotency-Key）
 │       ├── api.test.ts         # 15 个测试：错误映射 / 刷新判定 / 写请求契约
 │       ├── router.ts           # 路由与登录态守卫
-│       ├── views/              # 登录 / 列表 / 详情（含验收面板）
-│       └── types.ts
+│       ├── styles/             # 设计令牌 → 基础 → 组件 → 响应式（四层）
+│       ├── composables/        # Toast / 异步动作 / 当前用户 / 滚动锁 / 焦点陷阱 / 断点
+│       ├── components/         # 15 个可复用组件（按钮/弹窗/徽标/空态/引导/验收面板…）
+│       ├── utils/              # 格式化与输入校验（与后端 invariants 同口径）+ 36 个测试
+│       └── views/              # 登录 / 列表 / 详情（含验收面板）
 │
 └── docs/
     ├── 架构设计与关键取舍.md      # 为什么这样设计
+    ├── 前端设计说明.md            # 模块划分 / 页面结构 / 交互流程 / 响应式策略
     ├── 测试与验证记录.md          # 实测过程与证据
     └── 代码审查标准与流程.md      # 团队代码审查标准（检查项/流程/分级/时限）
 ```
@@ -282,7 +286,7 @@ node scripts/e2e.mjs                  # 全部通过时退出码 0，可直接�
 | 格式（Prettier） | ✅ | ✅ | `npm run format:check` |
 | 静态检查（ESLint） | ✅ 0 error 0 warning | ✅ 0 error 0 warning | `npm run lint` |
 | 类型检查 / 构建 | ✅ `nest build` | ✅ `vue-tsc` + `vite build` | `npm run build` |
-| 单元测试 | ✅ **47 个** | ✅ **15 个** | `npm test` |
+| 单元测试 | ✅ **47 个** | ✅ **75 个** | `npm test` |
 
 ```bash
 # 完整验证（任一步失败即视为不合格）
@@ -303,7 +307,18 @@ cd frontend && npm run format:check && npm run lint && npm run typecheck && npm 
 
 > 后端测试直接跑编译产物 `dist/`，使用 Node 内置 `node:test`，**不引入任何测试运行时依赖**。
 
-**已知质量缺口（诚实披露）**：尚未接入本地 `pre-commit` 钩子与依赖漏洞扫描（`npm audit` / Dependabot），见标准 §6.5。单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互；跨容器的端到端行为由 `scripts/e2e.mjs` 覆盖（DEM-01~08），DEM-09（故障可重试）与 DEM-10（数据持久化）仍为手工步骤。
+**前端测试覆盖**（75 个，Vitest）
+
+| 文件 | 用例数 | 覆盖要点 |
+| --- | --- | --- |
+| `api.test.ts` | 15 | 错误映射、刷新判定、写请求必须携带 `If-Match` / `Idempotency-Key` |
+| `utils/validate.test.ts` | 25 | code points 计数、URL 与数据库 CHECK 判定一致、各字段上下限、服务端文案归类 |
+| `utils/format.test.ts` | 11 | 非法日期回退、相对时间边界、emoji 安全截断 |
+| `components/render.test.ts` | 24 | 组件**真实渲染输出**：引导文案随「状态 × 角色」变化、Vn 独立留痕、验收面板初始禁用态、`role` 语义 |
+
+> 前端组件测试用 Vue 内置的 `vue/server-renderer` 做渲染断言，**零新增依赖**（不引入 jsdom / test-utils）；断言的是真实 DOM 结构与 aria 属性，而非「组件能被挂载」。交互流程与响应式布局由 `scripts/e2e.mjs` 与手工验收覆盖。
+
+**已知质量缺口（诚实披露）**：尚未接入本地 `pre-commit` 钩子与依赖漏洞扫描（`npm audit` / Dependabot），见标准 §6.5。单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互；跨容器的端到端行为由 `scripts/e2e.mjs` 覆盖（DEM-01~08），DEM-09（故障可重试）与 DEM-10（数据持久化）仍为手工步骤。前端组件测试为 SSR 渲染断言，不含 jsdom 点击交互模拟。
 
 ---
 

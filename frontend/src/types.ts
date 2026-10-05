@@ -86,6 +86,19 @@ export interface RequirementDetail {
   updatedAt: string;
 }
 
+/** 提交成果的表单载荷（前端 → API） */
+export interface SubmitPayload {
+  artifacts: string[];
+  note: string;
+}
+
+/** 逐项验收的表单载荷（前端 → API），由 ReviewPanel 产出 */
+export interface ReviewPayload {
+  action: 'RETURN' | 'COMPLETE';
+  reason?: string;
+  checks: ReviewCheck[];
+}
+
 /** 状态与动作的中文文案，仅用于展示 */
 export const STATE_LABEL: Record<RequirementState, string> = {
   PENDING: '待处理',

@@ -1,0 +1,211 @@
+/* ============================================================
+ * responsive.css —— 响应式适配（三档断点）
+ *
+ * 断点（与 tokens 中的注释一致，media query 无法使用变量，故写死）：
+ *   mobile  : 宽度 < 640px      —— 单列、底部抽屉式弹窗、触控优先
+ *   tablet  : 640px ~ 1023px    —— 紧凑双列、工具条换行
+ *   desktop : ≥ 1024px          —— 默认（components.css 即桌面态）
+ *
+ * 策略：桌面优先编写，此处只做「降级覆盖」，避免样式分散。
+ * ============================================================ */
+
+/* ───────── 平板：640px ~ 1023px ───────── */
+
+@media (max-width: 1023px) {
+  .page {
+    padding: var(--sp-5) var(--sp-4);
+  }
+
+  .toolbar {
+    padding: var(--sp-3) var(--sp-4);
+  }
+
+  .card-head,
+  .card-body,
+  .detail-head {
+    padding-left: var(--sp-4);
+    padding-right: var(--sp-4);
+  }
+
+  .meta-grid {
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+
+  /* 平板下侧边留白收窄，内容更宽 */
+  .toast-host {
+    right: var(--sp-4);
+  }
+}
+
+/* ───────── 移动端：< 640px ───────── */
+
+@media (max-width: 639px) {
+  :root {
+    /* 移动端整体收紧 */
+    --h-topbar: 52px;
+  }
+
+  /* 顶栏：压缩留白，用户名隐藏（头像 + 退出足够） */
+  .topbar {
+    padding: 0 var(--sp-4);
+    gap: var(--sp-3);
+  }
+
+  .topbar-username {
+    display: none;
+  }
+
+  .page {
+    padding: var(--sp-4) var(--sp-3);
+  }
+
+  /* 工具条：纵向堆叠，筛选项占满整行 */
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    padding: var(--sp-3);
+  }
+
+  .toolbar-filters {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .toolbar-filters .grow,
+  .toolbar-filters .input,
+  .toolbar-filters .select {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .seg {
+    display: flex;
+    width: 100%;
+  }
+  .seg button {
+    flex: 1;
+    height: 36px;
+  }
+
+  /* 触控目标放大到 ≥44px */
+  .btn {
+    height: var(--tap-min);
+    padding: 0 var(--sp-4);
+    font-size: 14px;
+  }
+  .btn-sm {
+    height: 34px;
+    font-size: 13px;
+  }
+
+  /* 列表项：转为纵向卡片，动作区整行铺开 */
+  .list-item {
+    flex-direction: column;
+    gap: var(--sp-3);
+    padding: var(--sp-4) var(--sp-3);
+  }
+
+  .list-item-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+  .list-item-actions .btn {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .list-item-link {
+    font-size: 15px;
+    line-height: 1.4;
+  }
+
+  /* 元信息：固定两列，避免单列过长 */
+  .meta-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-3);
+  }
+
+  .card-head,
+  .card-body,
+  .detail-head {
+    padding-left: var(--sp-3);
+    padding-right: var(--sp-3);
+  }
+
+  .detail-title {
+    font-size: 17px;
+  }
+
+  /* 弹窗 → 全屏抽屉：铺满视口，底部操作区固定可点 */
+  .overlay {
+    padding: 0;
+    align-items: stretch;
+  }
+
+  .modal {
+    max-width: 100%;
+    width: 100%;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    border-radius: 0;
+  }
+
+  .modal-head {
+    padding: var(--sp-4);
+  }
+
+  .modal-body {
+    padding: var(--sp-4);
+  }
+
+  .modal-foot {
+    flex-direction: column;
+    padding: var(--sp-3) var(--sp-4);
+    /* 兼容 iOS 安全区 */
+    padding-bottom: max(var(--sp-3), env(safe-area-inset-bottom));
+  }
+  .modal-foot .btn {
+    width: 100%;
+  }
+
+  /* 提示条铺满顶部 */
+  .toast-host {
+    top: calc(var(--h-topbar) + var(--sp-2));
+    left: var(--sp-3);
+    right: var(--sp-3);
+    width: auto;
+  }
+
+  .empty {
+    padding: var(--sp-8) var(--sp-4);
+  }
+
+  /* 验收项放大，便于点按 */
+  .review-item {
+    padding: var(--sp-3);
+  }
+  .review-item input {
+    width: 20px;
+    height: 20px;
+    margin-top: 1px;
+  }
+
+  .submission-head,
+  .submission-body {
+    padding-left: var(--sp-3);
+    padding-right: var(--sp-3);
+  }
+}
+
+/* ───────── 超小屏：< 380px ───────── */
+
+@media (max-width: 379px) {
+  .brand-text {
+    display: none;
+  }
+
+  .meta-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

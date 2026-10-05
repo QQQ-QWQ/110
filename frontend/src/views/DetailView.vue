@@ -2,30 +2,62 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ApiError, api, isRefreshable } from '../api';
-import { COMMAND_LABEL, EVENT_LABEL } from '../types';
-import type { CommandType, RequirementDetail } from '../types';
+import { useAsyncAction } from '../composables/useAsyncAction';
+import { useToast } from '../composables/useToast';
+import AlertBox from '../components/AlertBox.vue';
+import BaseButton from '../components/BaseButton.vue';
+import BaseModal from '../components/BaseModal.vue';
+import CriteriaList from '../components/CriteriaList.vue';
+import EventTimeline from '../components/EventTimeline.vue';
+import FormField from '../components/FormField.vue';
+import NextStepCard from '../components/NextStepCard.vue';
+import ReviewPanel from '../components/ReviewPanel.vue';
+import RoleTag from '../components/RoleTag.vue';
+import SkeletonList from '../components/SkeletonList.vue';
+import StatusBadge from '../components/StatusBadge.vue';
+import SubmissionCard from '../components/SubmissionCard.vue';
+import { COMMAND_LABEL } from '../types';
+import type { CommandType, RequirementDetail, ReviewPayload } from '../types';
+import { formatDateTime } from '../utils/format';
+import {
+  countCodePoints,
+  fieldFromServerMessage,
+  splitLines,
+  validateArtifacts,
+  validateCriteria,
+  validateDescription,
+  validateNote,
+  validateTitle,
+  type FieldErrors,
+} from '../utils/validate';
 
+/**
+ * DetailView —— 需求详情页。
+ *
+ * 页面结构（自上而下）：
+ *   返回 → 头部（标题/状态/角色 + 元信息 + 动作区 + 下一步引导）
+ *        → 问题与内容说明 → 验收条件 → 提交与验收记录 → 操作留痕
+ *
+ * 三类弹窗复用同一套基座：编辑（仅待处理）、提交成果（仅进行中）、逐项验收（仅待验收）。
+ * 所有失败都会**保留用户已输入内容**并给出可读文案，绝不清空表单。
+ */
 const props = defineProps<{ id: string }>();
 const router = useRouter();
+const toast = useToast();
+const { busy, error, lastError, run } = useAsyncAction();
 
 const detail = ref<RequirementDetail | null>(null);
 const loading = ref(true);
-const busy = ref(false);
-const error = ref('');
-const notice = ref('');
-
-function fmt(value: string): string {
-  return new Date(value).toLocaleString('zh-CN', { hour12: false });
-}
+const loadError = ref('');
 
 async function load(): Promise<void> {
   loading.value = true;
-  error.value = '';
+  loadError.value = '';
   try {
     detail.value = await api.detail(props.id);
   } catch (e) {
     detail.value = null;
-    error.value = e instanceof ApiError ? e.message : '加载失败';
+    loadError.value = e instanceof ApiError ? e.message : '加载失败，请稍后重试';
   } finally {
     loading.value = false;
   }
@@ -34,241 +66,199 @@ async function load(): Promise<void> {
 onMounted(load);
 watch(() => props.id, load);
 
-/** 统一执行写操作：成功刷新并提示；412 冲突时自动重载以拿到最新 rowVersion */
-async function run(fn: () => Promise<unknown>, successMsg: string): Promise<boolean> {
-  if (!detail.value) return false;
-  busy.value = true;
-  error.value = '';
-  notice.value = '';
-  try {
-    await fn();
-    notice.value = successMsg;
-    await load();
-    return true;
-  } catch (e) {
-    error.value = e instanceof ApiError ? e.message : '操作失败';
-    if (isRefreshable(e)) {
-      await load();
-      error.value = `${error.value}（已为你刷新到最新数据）`;
-    }
-    return false;
-  } finally {
-    busy.value = false;
-  }
-}
+const can = (command: CommandType): boolean => detail.value?.nextActions.includes(command) ?? false;
 
-const can = (c: CommandType): boolean => detail.value?.nextActions.includes(c) ?? false;
-
-const isProposer = computed(() => detail.value?.myRole === 'PROPOSER');
-const isAssignee = computed(() => detail.value?.myRole === 'ASSIGNEE');
-
-/** 验收条件 id → 文本，用于把验收结果渲染成「条件 + 通过/未通过」 */
-const criterionText = computed(() => {
+/** criterionId → "1. 条件文本"，用于把验收结果还原成可读条目 */
+const criterionText = computed<Record<string, string>>(() => {
   const map: Record<string, string> = {};
   for (const c of detail.value?.criteria ?? []) map[c.id] = `${c.seq}. ${c.text}`;
   return map;
 });
 
-function actionHint(c: CommandType): string {
-  return COMMAND_LABEL[c];
+/** 失败后的统一收尾：版本/状态冲突说明数据已陈旧，自动刷新拿最新 rowVersion */
+async function settleFailure(inline?: (message: string) => void): Promise<void> {
+  const message = error.value;
+  if (inline) inline(message);
+  else toast.error(message);
+  if (isRefreshable(lastError.value)) await load();
 }
 
 // ────────────────── 开始处理 ──────────────────
 
 async function doStart(): Promise<void> {
-  if (!detail.value) return;
-  await run(
-    () => api.start(detail.value!.id, detail.value!.rowVersion),
-    '已开始处理，验收条件已冻结',
-  );
+  const current = detail.value;
+  if (!current) return;
+  const ok = await run(() => api.start(current.id, current.rowVersion));
+  if (ok) {
+    toast.success('已开始处理，验收条件已冻结');
+    await load();
+    return;
+  }
+  await settleFailure();
 }
 
 // ────────────────── 编辑 ──────────────────
 
 const editOpen = ref(false);
+const editFormError = ref('');
+const editErrors = ref<FieldErrors>({});
 const editForm = reactive({ title: '', description: '', criteriaText: '' });
-const editError = ref('');
 
 function openEdit(): void {
-  if (!detail.value) return;
-  editForm.title = detail.value.title;
-  editForm.description = detail.value.description;
-  editForm.criteriaText = detail.value.criteria.map((c) => c.text).join('\n');
-  editError.value = '';
+  const current = detail.value;
+  if (!current) return;
+  editForm.title = current.title;
+  editForm.description = current.description;
+  editForm.criteriaText = current.criteria.map((c) => c.text).join('\n');
+  editErrors.value = {};
+  editFormError.value = '';
   editOpen.value = true;
 }
 
 async function saveEdit(): Promise<void> {
-  if (!detail.value) return;
-  editError.value = '';
-  const criteria = editForm.criteriaText
-    .split('\n')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  if (!editForm.title.trim()) {
-    editError.value = '请填写标题';
-    return;
-  }
-  if (criteria.length === 0) {
-    editError.value = '至少需要一条验收条件';
-    return;
-  }
+  const current = detail.value;
+  if (!current) return;
+  editFormError.value = '';
 
-  const ok = await run(
-    () =>
-      api.edit(
-        detail.value!.id,
-        {
-          title: editForm.title.trim(),
-          description: editForm.description.trim(),
-          criteria,
-        },
-        detail.value!.rowVersion,
-      ),
-    '需求已更新',
+  const titleError = validateTitle(editForm.title);
+  const descriptionError = validateDescription(editForm.description);
+  const criteriaError = validateCriteria(splitLines(editForm.criteriaText));
+  editErrors.value = {
+    title: titleError ?? undefined,
+    description: descriptionError ?? undefined,
+    criteriaText: criteriaError ?? undefined,
+  };
+  if (titleError || descriptionError || criteriaError) return;
+
+  const ok = await run(() =>
+    api.edit(
+      current.id,
+      {
+        title: editForm.title.trim(),
+        description: editForm.description.trim(),
+        criteria: splitLines(editForm.criteriaText),
+      },
+      current.rowVersion,
+    ),
   );
-  if (ok) editOpen.value = false;
-  else editError.value = error.value;
+  if (ok) {
+    editOpen.value = false;
+    toast.success('需求已更新');
+    await load();
+    return;
+  }
+  await settleFailure((message) => {
+    const field = fieldFromServerMessage(message);
+    if (field) editErrors.value = { ...editErrors.value, [field]: message };
+    else editFormError.value = message;
+  });
 }
 
 // ────────────────── 提交成果 ──────────────────
 
 const submitOpen = ref(false);
+const submitFormError = ref('');
+const submitErrors = ref<FieldErrors>({});
 const submitForm = reactive({ note: '', artifactsText: '' });
-const submitError = ref('');
 
 function openSubmit(): void {
   submitForm.note = '';
   submitForm.artifactsText = '';
-  submitError.value = '';
+  submitErrors.value = {};
+  submitFormError.value = '';
   submitOpen.value = true;
 }
 
 async function doSubmit(): Promise<void> {
-  if (!detail.value) return;
-  submitError.value = '';
-  const artifacts = submitForm.artifactsText
-    .split('\n')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  const current = detail.value;
+  if (!current) return;
+  submitFormError.value = '';
 
-  if (artifacts.length === 0) {
-    submitError.value = '至少填写一个可查看的成果链接（每行一个）';
-    return;
-  }
-  if (!submitForm.note.trim()) {
-    submitError.value = '请填写完成说明';
-    return;
-  }
+  const artifacts = splitLines(submitForm.artifactsText);
+  const artifactsError = validateArtifacts(artifacts);
+  const noteError = validateNote(submitForm.note);
+  submitErrors.value = { artifactsText: artifactsError ?? undefined, note: noteError ?? undefined };
+  if (artifactsError || noteError) return;
 
-  const ok = await run(
-    () =>
-      api.submit(
-        detail.value!.id,
-        { artifacts, note: submitForm.note.trim() },
-        detail.value!.rowVersion,
-      ),
-    '成果已提交，等待提出者验收',
+  const ok = await run(() =>
+    api.submit(current.id, { artifacts, note: submitForm.note.trim() }, current.rowVersion),
   );
-  if (ok) submitOpen.value = false;
-  else submitError.value = error.value;
+  if (ok) {
+    submitOpen.value = false;
+    toast.success('成果已提交，等待提出者验收');
+    await load();
+    return;
+  }
+  await settleFailure((message) => {
+    const field = fieldFromServerMessage(message);
+    if (field) submitErrors.value = { ...submitErrors.value, [field]: message };
+    else submitFormError.value = message;
+  });
 }
 
-// ────────────────── 验收面板 ──────────────────
+// ────────────────── 逐项验收 ──────────────────
 
 const reviewOpen = ref(false);
-const reviewError = ref('');
-const checks = ref<Record<string, boolean>>({});
-const returnReason = ref('');
+const reviewServerError = ref('');
 
 function openReview(): void {
-  checks.value = {};
-  for (const c of detail.value?.criteria ?? []) checks.value[c.id] = false;
-  returnReason.value = '';
-  reviewError.value = '';
+  reviewServerError.value = '';
   reviewOpen.value = true;
 }
 
-const passedCount = computed(
-  () => (detail.value?.criteria ?? []).filter((c) => checks.value[c.id]).length,
-);
-const totalCount = computed(() => detail.value?.criteria.length ?? 0);
-const allPassed = computed(() => totalCount.value > 0 && passedCount.value === totalCount.value);
-
-function toggle(id: string): void {
-  checks.value = { ...checks.value, [id]: !checks.value[id] };
-}
-
-async function doReview(action: 'RETURN' | 'COMPLETE'): Promise<void> {
+async function doReview(payload: ReviewPayload): Promise<void> {
   const current = detail.value?.currentSubmission;
   if (!detail.value || !current) {
-    reviewError.value = '当前没有可验收的提交';
+    reviewServerError.value = '当前没有可验收的提交';
     return;
   }
-  reviewError.value = '';
+  reviewServerError.value = '';
 
-  if (action === 'RETURN' && !returnReason.value.trim()) {
-    reviewError.value = '退回时必须填写具体修改原因';
+  const ok = await run(() => api.review(current.id, payload, detail.value!.rowVersion));
+  if (ok) {
+    reviewOpen.value = false;
+    toast.success(payload.action === 'RETURN' ? '已退回，负责人可重新提交' : '已确认完成');
+    await load();
     return;
   }
-  if (action === 'COMPLETE' && !allPassed.value) {
-    reviewError.value = '存在未通过的验收条件，不能确认完成';
-    return;
-  }
-
-  const ok = await run(
-    () =>
-      api.review(
-        current.id,
-        {
-          action,
-          reason: action === 'RETURN' ? returnReason.value.trim() : undefined,
-          checks: (detail.value!.criteria ?? []).map((c) => ({
-            criterionId: c.id,
-            passed: !!checks.value[c.id],
-          })),
-        },
-        detail.value!.rowVersion,
-      ),
-    action === 'RETURN' ? '已退回，负责人可重新提交' : '已确认完成',
-  );
-
-  if (ok) reviewOpen.value = false;
-  else reviewError.value = error.value;
+  reviewServerError.value = error.value;
+  if (isRefreshable(lastError.value)) await load();
 }
 </script>
 
 <template>
-  <main class="page">
+  <main id="main-content" class="page">
     <div class="mb-1">
-      <button class="btn btn-sm btn-ghost" type="button" @click="router.push({ name: 'list' })">
+      <BaseButton size="sm" variant="ghost" @click="router.push({ name: 'list' })">
         ← 返回列表
-      </button>
+      </BaseButton>
     </div>
 
-    <div v-if="loading" class="card"><div class="empty">加载中…</div></div>
+    <div v-if="loading" class="card">
+      <SkeletonList :rows="4" />
+    </div>
 
     <div v-else-if="!detail" class="card">
       <div class="empty">
-        {{ error || '需求不存在或你无权访问' }}
-        <div class="mt-1"><button class="btn btn-sm" type="button" @click="load">重试</button></div>
+        <div class="empty-title">{{ loadError || '需求不存在或你无权访问' }}</div>
+        <div class="empty-desc">与需求无关的账号访问会被拒绝，且不会暴露该需求是否存在。</div>
+        <div class="mt-2">
+          <BaseButton size="sm" @click="load">重试</BaseButton>
+          <BaseButton size="sm" variant="ghost" @click="router.push({ name: 'list' })">
+            返回列表
+          </BaseButton>
+        </div>
       </div>
     </div>
 
     <template v-else>
-      <div v-if="error || notice" style="margin-bottom: 14px">
-        <div v-if="error" class="alert alert-error" style="margin-bottom: 0">{{ error }}</div>
-        <div v-else class="alert alert-info" style="margin-bottom: 0">{{ notice }}</div>
-      </div>
-
-      <!-- 头部：标题 / 状态 / 元信息 / 动作 -->
-      <div class="card">
+      <!-- 头部：标题 / 状态 / 角色 / 元信息 / 动作 / 下一步 -->
+      <section class="card">
         <div class="detail-head">
           <div class="list-item-title" style="margin-bottom: 0">
-            <h1 class="detail-title" style="margin: 0">{{ detail.title }}</h1>
-            <span class="badge" :class="detail.state">{{ detail.stateLabel }}</span>
-            <span v-if="isProposer" class="tag role-PROPOSER">你是提出者</span>
-            <span v-else-if="isAssignee" class="tag role-ASSIGNEE">你是负责人</span>
+            <h1 class="detail-title">{{ detail.title }}</h1>
+            <StatusBadge :state="detail.state" :label="detail.stateLabel" />
+            <RoleTag :role="detail.myRole" />
           </div>
 
           <div class="meta-grid">
@@ -286,277 +276,181 @@ async function doReview(action: 'RETURN' | 'COMPLETE'): Promise<void> {
             </div>
             <div class="meta-item">
               <div class="k">最近更新</div>
-              <div class="v">{{ fmt(detail.updatedAt) }}</div>
+              <div class="v">{{ formatDateTime(detail.updatedAt) }}</div>
             </div>
           </div>
 
           <div v-if="detail.nextActions.length > 0" class="row mt-2">
-            <button v-if="can('EDIT')" class="btn" type="button" :disabled="busy" @click="openEdit">
-              {{ actionHint('EDIT') }}
-            </button>
-            <button
-              v-if="can('START')"
-              class="btn btn-primary"
-              type="button"
-              :disabled="busy"
-              @click="doStart"
-            >
-              {{ busy ? '处理中…' : actionHint('START') }}
-            </button>
-            <button
-              v-if="can('SUBMIT')"
-              class="btn btn-primary"
-              type="button"
-              :disabled="busy"
-              @click="openSubmit"
-            >
-              {{ actionHint('SUBMIT') }}
-            </button>
-            <button
+            <BaseButton v-if="can('EDIT')" :disabled="busy" @click="openEdit">
+              {{ COMMAND_LABEL.EDIT }}
+            </BaseButton>
+            <BaseButton v-if="can('START')" variant="primary" :loading="busy" @click="doStart">
+              {{ busy ? '处理中…' : COMMAND_LABEL.START }}
+            </BaseButton>
+            <BaseButton v-if="can('SUBMIT')" variant="primary" @click="openSubmit">
+              {{ COMMAND_LABEL.SUBMIT }}
+            </BaseButton>
+            <BaseButton
               v-if="can('REVIEW_RETURN') || can('REVIEW_COMPLETE')"
-              class="btn btn-primary"
-              type="button"
-              :disabled="busy"
+              variant="primary"
               @click="openReview"
             >
               逐项验收
-            </button>
+            </BaseButton>
           </div>
-          <div v-else class="mt-2 faint small">
-            当前状态下你没有可执行的操作（已完成，或你不是该需求的提出者 / 负责人）。
+
+          <div class="mt-2">
+            <NextStepCard
+              :state="detail.state"
+              :my-role="detail.myRole"
+              :next-actions="detail.nextActions"
+            />
           </div>
         </div>
 
         <div class="card-body">
-          <h3 class="mb-1" style="font-size: 13px; color: var(--text-muted)">问题与内容说明</h3>
+          <h3 class="mb-1" style="font-size: 13px; color: var(--c-text-muted)">问题与内容说明</h3>
           <div class="prose">{{ detail.description }}</div>
         </div>
-      </div>
+      </section>
 
       <!-- 验收条件 -->
-      <div class="card">
+      <section class="card">
         <div class="card-head">
           <h3>验收条件（{{ detail.criteria.length }} 条）</h3>
           <span class="faint small">开始处理后冻结，双方以此为唯一标准</span>
         </div>
         <div class="card-body">
-          <ul class="criteria-list">
-            <li v-for="c in detail.criteria" :key="c.id">
-              <span class="seq">{{ c.seq }}</span>
-              <span>{{ c.text }}</span>
-            </li>
-          </ul>
+          <CriteriaList :criteria="detail.criteria" />
         </div>
-      </div>
+      </section>
 
       <!-- 提交与验收记录 -->
-      <div class="card">
+      <section class="card">
         <div class="card-head">
           <h3>提交与验收记录（{{ detail.submissions.length }} 次提交）</h3>
+          <span class="faint small">每次提交独立保留，旧记录不被覆盖</span>
         </div>
         <div class="card-body">
           <div v-if="detail.submissions.length === 0" class="faint small">负责人尚未提交成果。</div>
 
-          <div v-for="s in detail.submissions" :key="s.id" class="submission">
-            <div class="submission-head">
-              <strong>V{{ s.submissionNo }}</strong>
-              <span
-                v-if="s.id === detail.currentSubmissionId"
-                class="tag"
-                style="background: var(--primary-soft); color: var(--primary-dark)"
-              >
-                当前提交
-              </span>
-              <span class="faint small"
-                >{{ s.submittedBy.name }} 提交于 {{ fmt(s.submittedAt) }}</span
-              >
-            </div>
-
-            <div class="submission-body">
-              <h5>完成说明</h5>
-              <div class="prose" style="margin-bottom: 12px">{{ s.note }}</div>
-
-              <h5>成果链接</h5>
-              <ul class="artifact-list" style="margin-bottom: 4px">
-                <li v-for="a in s.artifacts" :key="a.seq">
-                  <a :href="a.url" target="_blank" rel="noopener noreferrer">{{ a.url }}</a>
-                </li>
-              </ul>
-
-              <template v-if="s.reviews.length > 0">
-                <div v-for="(r, i) in s.reviews" :key="i" class="review-block" :class="r.action">
-                  <div class="review-head">
-                    <span>{{ r.action === 'RETURN' ? '退回修改' : '确认完成' }}</span>
-                    <span class="faint">· {{ r.reviewer.name }} · {{ fmt(r.reviewedAt) }}</span>
-                  </div>
-
-                  <div v-if="r.reason" class="mb-1">
-                    <strong>退回原因：</strong
-                    ><span class="prose" style="display: inline">{{ r.reason }}</span>
-                  </div>
-
-                  <ul class="check-list">
-                    <li v-for="c in r.checks" :key="c.criterionId">
-                      <span class="check-mark" :class="c.passed ? 'pass' : 'fail'">
-                        {{ c.passed ? '✓' : '✗' }}
-                      </span>
-                      <span>{{ criterionText[c.criterionId] ?? c.criterionId }}</span>
-                    </li>
-                  </ul>
-                </div>
-              </template>
-              <div v-else class="faint small mt-1">该提交尚未验收。</div>
-            </div>
-          </div>
+          <SubmissionCard
+            v-for="submission in detail.submissions"
+            :key="submission.id"
+            :submission="submission"
+            :is-current="submission.id === detail.currentSubmissionId"
+            :criterion-text="criterionText"
+          />
         </div>
-      </div>
+      </section>
 
-      <!-- 事件时间线 -->
-      <div class="card">
+      <!-- 操作留痕 -->
+      <section class="card">
         <div class="card-head">
           <h3>操作留痕（{{ detail.events.length }} 条事件）</h3>
           <span class="faint small">追加式记录，不可篡改</span>
         </div>
         <div class="card-body">
-          <ul class="timeline">
-            <li v-for="e in detail.events" :key="e.seq">
-              <div class="tl-head">
-                <span class="mono faint">#{{ e.seq }}</span>
-                <span class="tl-actor">{{ e.actor.name }}</span>
-                <span>{{ EVENT_LABEL[e.eventType] ?? e.eventType }}</span>
-                <span class="tl-time">{{ fmt(e.createdAt) }}</span>
-              </div>
-            </li>
-          </ul>
+          <EventTimeline :events="detail.events" />
         </div>
-      </div>
+      </section>
     </template>
 
     <!-- 编辑需求 -->
-    <div v-if="editOpen" class="overlay" @click.self="editOpen = false">
-      <div class="modal">
-        <div class="modal-head">
-          <h3>编辑需求</h3>
-          <button class="icon-btn" type="button" @click="editOpen = false">×</button>
-        </div>
-        <div class="modal-body">
-          <div v-if="editError" class="alert alert-error">{{ editError }}</div>
-          <div class="field">
-            <label>标题</label>
-            <input v-model="editForm.title" class="input" maxlength="200" />
-          </div>
-          <div class="field">
-            <label>问题与内容说明</label>
-            <textarea v-model="editForm.description" class="textarea" />
-          </div>
-          <div class="field" style="margin-bottom: 0">
-            <label>验收条件</label>
-            <textarea v-model="editForm.criteriaText" class="textarea" />
-            <div class="hint">每行一条。仅在「待处理」阶段可编辑。</div>
-          </div>
-        </div>
-        <div class="modal-foot">
-          <button class="btn" type="button" :disabled="busy" @click="editOpen = false">取消</button>
-          <button class="btn btn-primary" type="button" :disabled="busy" @click="saveEdit">
-            {{ busy ? '保存中…' : '保存' }}
-          </button>
-        </div>
-      </div>
-    </div>
+    <BaseModal v-model="editOpen" title="编辑需求" :closable="!busy">
+      <AlertBox v-if="editFormError" kind="error" class="mb-2">{{ editFormError }}</AlertBox>
+
+      <FormField
+        label="标题"
+        required
+        for-id="edit-title"
+        :error="editErrors.title"
+        :counter="`${countCodePoints(editForm.title)} / 200`"
+      >
+        <input id="edit-title" v-model="editForm.title" class="input" maxlength="200" />
+      </FormField>
+
+      <FormField
+        label="问题与内容说明"
+        required
+        for-id="edit-description"
+        :error="editErrors.description"
+      >
+        <textarea id="edit-description" v-model="editForm.description" class="textarea" />
+      </FormField>
+
+      <FormField
+        label="验收条件"
+        required
+        for-id="edit-criteria"
+        :error="editErrors.criteriaText"
+        hint="每行一条。仅在「待处理」阶段可编辑；开始处理后将被冻结。"
+      >
+        <textarea id="edit-criteria" v-model="editForm.criteriaText" class="textarea" />
+      </FormField>
+
+      <template #footer>
+        <BaseButton :disabled="busy" @click="editOpen = false">取消</BaseButton>
+        <BaseButton variant="primary" :loading="busy" @click="saveEdit">
+          {{ busy ? '保存中…' : '保存' }}
+        </BaseButton>
+      </template>
+    </BaseModal>
 
     <!-- 提交成果 -->
-    <div v-if="submitOpen" class="overlay" @click.self="submitOpen = false">
-      <div class="modal">
-        <div class="modal-head">
-          <h3>提交成果</h3>
-          <button class="icon-btn" type="button" @click="submitOpen = false">×</button>
-        </div>
-        <div class="modal-body">
-          <div v-if="submitError" class="alert alert-error">{{ submitError }}</div>
-          <div class="alert alert-info">
-            每次提交都会生成新的版本号（V1、V2…），历史版本不会被覆盖。
-          </div>
-          <div class="field">
-            <label>成果链接</label>
-            <textarea
-              v-model="submitForm.artifactsText"
-              class="textarea"
-              placeholder="每行一个完整 URL，例如：&#10;https://github.com/org/repo/pull/12"
-            />
-            <div class="hint">1~20 个，须以 http:// 或 https:// 开头。</div>
-          </div>
-          <div class="field" style="margin-bottom: 0">
-            <label>完成说明</label>
-            <textarea
-              v-model="submitForm.note"
-              class="textarea"
-              placeholder="说明本次实现了什么、如何验证"
-            />
-          </div>
-        </div>
-        <div class="modal-foot">
-          <button class="btn" type="button" :disabled="busy" @click="submitOpen = false">
-            取消
-          </button>
-          <button class="btn btn-primary" type="button" :disabled="busy" @click="doSubmit">
-            {{ busy ? '提交中…' : '提交' }}
-          </button>
-        </div>
-      </div>
-    </div>
+    <BaseModal v-model="submitOpen" title="提交成果" :closable="!busy">
+      <AlertBox v-if="submitFormError" kind="error" class="mb-2">{{ submitFormError }}</AlertBox>
+      <AlertBox kind="info" class="mb-2">
+        每次提交都会生成新的版本号（V1、V2…），历史版本不会被覆盖。
+      </AlertBox>
 
-    <!-- 验收面板 -->
-    <div v-if="reviewOpen" class="overlay" @click.self="reviewOpen = false">
-      <div class="modal">
-        <div class="modal-head">
-          <h3>逐项验收 · V{{ detail?.currentSubmission?.submissionNo }}</h3>
-          <button class="icon-btn" type="button" @click="reviewOpen = false">×</button>
-        </div>
-        <div class="modal-body">
-          <div v-if="reviewError" class="alert alert-error">{{ reviewError }}</div>
+      <FormField
+        label="成果链接"
+        required
+        for-id="submit-artifacts"
+        :error="submitErrors.artifactsText"
+        hint="每行一个完整 URL，1~20 个，须以 http:// 或 https:// 开头。"
+      >
+        <textarea
+          id="submit-artifacts"
+          v-model="submitForm.artifactsText"
+          class="textarea"
+          placeholder="https://github.com/org/repo/pull/12"
+        />
+      </FormField>
 
-          <div class="alert alert-info">
-            必须对全部 {{ totalCount }} 条验收条件逐项记录结果。已通过
-            <strong>{{ passedCount }}</strong> / {{ totalCount }}。
-          </div>
+      <FormField
+        label="完成说明"
+        required
+        for-id="submit-note"
+        :error="submitErrors.note"
+        hint="说明本次实现了什么、如何验证；可对应到具体验收条件。"
+      >
+        <textarea
+          id="submit-note"
+          v-model="submitForm.note"
+          class="textarea"
+          placeholder="例如：已实现 CSV 导出，入口在列表页右上角；附上验证步骤与截图链接。"
+        />
+      </FormField>
 
-          <div
-            v-for="c in detail?.criteria ?? []"
-            :key="c.id"
-            class="review-item"
-            :class="checks[c.id] ? 'pass' : 'fail'"
-            @click="toggle(c.id)"
-          >
-            <input type="checkbox" :checked="!!checks[c.id]" @click.stop="toggle(c.id)" />
-            <span class="rtext">{{ c.seq }}. {{ c.text }}</span>
-          </div>
+      <template #footer>
+        <BaseButton :disabled="busy" @click="submitOpen = false">取消</BaseButton>
+        <BaseButton variant="primary" :loading="busy" @click="doSubmit">
+          {{ busy ? '提交中…' : '提交' }}
+        </BaseButton>
+      </template>
+    </BaseModal>
 
-          <div class="field mt-2" style="margin-bottom: 0">
-            <label>退回原因（选择「退回修改」时必填）</label>
-            <textarea
-              v-model="returnReason"
-              class="textarea"
-              placeholder="请具体说明哪一条未通过、期望如何修改"
-            />
-          </div>
-        </div>
-        <div class="modal-foot">
-          <button class="btn" type="button" :disabled="busy" @click="reviewOpen = false">
-            取消
-          </button>
-          <button class="btn btn-danger" type="button" :disabled="busy" @click="doReview('RETURN')">
-            退回修改
-          </button>
-          <button
-            class="btn btn-primary"
-            type="button"
-            :disabled="busy || !allPassed"
-            @click="doReview('COMPLETE')"
-          >
-            确认完成
-          </button>
-        </div>
-      </div>
-    </div>
+    <!-- 逐项验收 -->
+    <ReviewPanel
+      v-if="detail"
+      v-model="reviewOpen"
+      :criteria="detail.criteria"
+      :submission-no="detail.currentSubmission?.submissionNo ?? 0"
+      :busy="busy"
+      :server-error="reviewServerError"
+      @submit="doReview"
+    />
   </main>
 </template>

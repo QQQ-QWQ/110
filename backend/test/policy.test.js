@@ -13,9 +13,11 @@ const {
   roleOf,
   assertCanRead,
   assertCanPerform,
+  assertRoleCanPerform,
+  assertStateCanPerform,
   visibilityFilter,
 } = require('../dist/domain/policy.js');
-const { AppError } = require('../dist/core/errors.js');
+const { AppError, Errors } = require('../dist/core/errors.js');
 
 /** A 提出、B 负责、C 无关 */
 const req = { proposerId: 'A', assigneeId: 'B' };
@@ -184,4 +186,86 @@ test('未登记命令被拒绝，而不是抛 TypeError 变成 500（审查 R-04
 test('列表可见性过滤：在 SQL 层用 OR 包裹，仅返回本人相关需求', () => {
   const filter = visibilityFilter('A');
   assert.deepEqual(filter, { OR: [{ proposerId: 'A' }, { assigneeId: 'A' }] });
+});
+
+// ─────────────────────────────────────────────────────────────
+// 角色 / 状态两段拆分：让版本校验（412）能插在两者之间
+// ─────────────────────────────────────────────────────────────
+
+test('角色段：不可见 404、角色不符 403 —— 与合并版行为一致', () => {
+  assert.equal(
+    statusOf(() => assertRoleCanPerform('C', req, 'EDIT')),
+    404,
+  );
+  assert.equal(
+    statusOf(() => assertRoleCanPerform('B', req, 'EDIT')),
+    403,
+  );
+  assert.equal(
+    statusOf(() => assertRoleCanPerform('A', req, 'EDIT')),
+    'no-throw',
+  );
+  assert.equal(
+    statusOf(() => assertRoleCanPerform('A', req, 'CREATE')),
+    403,
+  );
+});
+
+test('状态段：角色对但状态不符 → 409；终态给出更明确的文案', () => {
+  assert.equal(
+    statusOf(() => assertStateCanPerform('IN_PROGRESS', 'EDIT')),
+    409,
+  );
+  assert.equal(
+    statusOf(() => assertStateCanPerform('PENDING', 'SUBMIT')),
+    409,
+  );
+  assert.equal(
+    statusOf(() => assertStateCanPerform('PENDING', 'EDIT')),
+    'no-throw',
+  );
+
+  // 终态：文案应点明「已完成」，而不是笼统的「状态不允许」
+  try {
+    assertStateCanPerform('COMPLETED', 'REVIEW_RETURN');
+    assert.fail('终态应被拒绝');
+  } catch (e) {
+    assert.equal(e.status, 409);
+    assert.match(e.message, /已完成/);
+  }
+});
+
+test('★ 判定顺序：可见性 → 角色 → 版本 → 状态（412 不再被 409 抢先）', () => {
+  // 复现 DEM-02 的真实场景：alice（提出者）手里是旧页面（version 1），
+  // 而需求已被 bob 开始处理（IN_PROGRESS，version 3）。
+  const state = 'IN_PROGRESS';
+  const command = 'EDIT';
+  const clientVersion = 1;
+  const serverVersion = 3;
+
+  // 旧写法（角色+状态合并）会先命中状态守卫 → 409，把「版本过期」误报成「状态不允许」
+  assert.equal(
+    statusOf(() => assertCanPerform('A', req, state, command)),
+    409,
+  );
+
+  // 新顺序：角色通过 → 版本不符 → 412（正确的语义）
+  assert.equal(
+    statusOf(() => {
+      assertRoleCanPerform('A', req, command);
+      if (serverVersion !== clientVersion) throw Errors.stale();
+      assertStateCanPerform(state, command);
+    }),
+    412,
+  );
+
+  // 而不可见账号即使版本也过期，仍必须先回 404 —— 否则可用 412/409 的差异枚举资源存在性
+  assert.equal(
+    statusOf(() => {
+      assertRoleCanPerform('C', req, command);
+      if (serverVersion !== clientVersion) throw Errors.stale();
+      assertStateCanPerform(state, command);
+    }),
+    404,
+  );
 });

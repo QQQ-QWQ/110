@@ -2,7 +2,7 @@ import { Prisma, Requirement } from '@prisma/client';
 import { requestHashOf } from '../core/canonical-json';
 import { Errors } from '../core/errors';
 import { PrismaService } from '../core/prisma.service';
-import { assertCanPerform } from '../domain/policy';
+import { assertRoleCanPerform, assertStateCanPerform } from '../domain/policy';
 import { CommandType, MutatingCommand, RequirementState } from '../domain/states';
 
 /**
@@ -81,10 +81,15 @@ export async function executeCommand<TResponse>(
     if (!requirementId) throw Errors.notFound();
     const pre = await prisma.requirement.findUnique({ where: { id: requirementId } });
     if (!pre) throw Errors.notFound();
-    assertCanPerform(actorId, pre, pre.state as RequirementState, command as MutatingCommand);
+    // 顺序即语义：可见性 404 → 角色 403 → 版本 412 → 状态 409。
+    // 版本必须排在状态之前 —— `If-Match` 是请求前置条件，RFC 9110 要求它先于
+    // 方法处理求值；且客户端手里是旧状态，回 409「状态不允许」对它没有指导意义，
+    // 回 412 才能让它知道「应当刷新后重试」。
+    assertRoleCanPerform(actorId, pre, command as MutatingCommand);
     if (pre.rowVersion !== expectedRowVersion) {
       throw Errors.stale();
     }
+    assertStateCanPerform(pre.state as RequirementState, command as MutatingCommand);
   }
 
   // ── ④ Parse key / hash ──
@@ -137,20 +142,17 @@ export async function executeCommand<TResponse>(
     }
 
     // ⑥⑦ 事务内重新加载并再次守卫（并发下以事务内读到的为准）
+    //     顺序与事务外预检保持一致：角色 403 → 版本 412 → 状态 409
     let current: Requirement | null = null;
     if (command !== CommandType.CREATE) {
       current = await tx.requirement.findUnique({ where: { id: requirementId! } });
       if (!current) throw Errors.notFound();
-      assertCanPerform(
-        actorId,
-        current,
-        current.state as RequirementState,
-        command as MutatingCommand,
-      );
+      assertRoleCanPerform(actorId, current, command as MutatingCommand);
       // 版本号必填已在上方 ①′ 强制，此处直接比较
       if (current.rowVersion !== expectedRowVersion) {
         throw Errors.stale();
       }
+      assertStateCanPerform(current.state as RequirementState, command as MutatingCommand);
     }
 
     // ⑧ 业务写入（内部必须使用条件更新以保证乐观锁真正生效）

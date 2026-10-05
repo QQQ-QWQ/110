@@ -42,15 +42,25 @@ export function assertCanRead(userId: string, r: RequirementOwnership): Role {
 }
 
 /**
- * 写权限：先判可见性，再判动作合法性。
- * - 不可见        → 404（防枚举）
- * - 可见但角色不符 → 403（「无权限执行该操作」）
- * - 可见但状态不符 → 409（「当前状态不允许该操作」）
+ * 写权限 · 第 1 段：**角色判定**（不可见 → 404；角色不符 → 403）。
+ *
+ * 为什么要把角色与状态拆成两段：
+ *   HTTP 语义要求请求头里的前置条件（`If-Match`）**先于**方法处理求值
+ *   （RFC 9110 §13.1.1）。写命令管道因此需要把顺序摆成
+ *
+ *       可见性 404 → 角色 403 → 版本 412 → 状态 409
+ *
+ *   若把状态判定和角色判定绑在一起（旧写法），版本校验只能排在两者之后，
+ *   于是「客户端版本已过期」会被误报成「当前状态不允许该操作」——
+ *   而后者对客户端是误导：它屏幕上看到的还是旧状态，收到 409 只会困惑，
+ *   收到 412 才知道「应当刷新后重试」。
+ *
+ *   注意不可见性仍必须排在最前：否则对他人资源发一个过期版本号就能
+ *   通过 412/409 的差异把资源存在性试出来（枚举漏洞）。
  */
-export function assertCanPerform(
+export function assertRoleCanPerform(
   userId: string,
   r: RequirementOwnership,
-  state: RequirementState,
   command: MutatingCommand,
 ): Role {
   const role = roleOf(userId, r);
@@ -64,12 +74,33 @@ export function assertCanPerform(
   if (!allowedRoles) throw Errors.forbidden();
   if (!allowedRoles.includes(role)) throw Errors.forbidden();
 
+  return role;
+}
+
+/** 写权限 · 第 2 段：**状态判定**（可见、角色对但状态不符 → 409） */
+export function assertStateCanPerform(state: RequirementState, command: MutatingCommand): void {
   if (!stateAllows(state, command)) {
     if (isTerminal(state)) {
       throw Errors.stateConflict('需求已完成，不能继续提交或重复验收');
     }
     throw Errors.stateConflict();
   }
+}
+
+/**
+ * 写权限：角色 + 状态的合并判定（404 → 403 → 409）。
+ *
+ * 不需要区分 412 与 409 的调用方可以继续用它；
+ * 写命令管道因为要插入版本校验，改用上面两个函数显式排列顺序。
+ */
+export function assertCanPerform(
+  userId: string,
+  r: RequirementOwnership,
+  state: RequirementState,
+  command: MutatingCommand,
+): Role {
+  const role = assertRoleCanPerform(userId, r, command);
+  assertStateCanPerform(state, command);
   return role;
 }
 

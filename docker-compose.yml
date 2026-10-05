@@ -1,0 +1,63 @@
+# ============================================================
+# 小团队需求与验收协作台 —— 一键启动
+#
+#   docker compose up --build
+#
+# 启动后访问： http://localhost:8080
+# 首次启动自动完成：建库迁移 + 写入预置测试数据（幂等，可重复启动）
+# 数据保存在命名卷 pgdata 中：删除容器后重建，业务数据依然存在
+# ============================================================
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: da-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_password}
+      POSTGRES_DB: ${POSTGRES_DB:-demand_acceptance}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-demand_acceptance}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./backend
+    container_name: da-api
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app_password}@db:5432/${POSTGRES_DB:-demand_acceptance}?schema=public
+      PORT: "3000"
+      # 预置测试账号的初始密码（仅初始化时使用，可用 .env 覆盖）
+      SEED_PASSWORD: ${SEED_PASSWORD:-Passw0rd!}
+      # 内网 http 部署下保持 false，否则浏览器不会回传会话 Cookie
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      DB_WAIT_MAX_TRIES: "60"
+      DB_WAIT_INTERVAL: "2"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+    container_name: da-web
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+    name: da-pgdata

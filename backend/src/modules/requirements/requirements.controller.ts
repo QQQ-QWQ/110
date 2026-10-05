@@ -1,0 +1,131 @@
+import {
+  ArrayMinSize,
+  IsArray,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+} from 'class-validator';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  Patch,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
+import { Errors } from '../../core/errors';
+import { idempotencyKeyOf, parseVersionHeader } from '../../core/http';
+import { AuthGuard, CurrentUser } from '../../core/security/auth.guard';
+import { ResolvedSession } from '../../core/security/session.service';
+import { ALL_STATES, RequirementState } from '../../domain/states';
+import { RequirementsService } from './requirements.service';
+
+export class CreateRequirementDto {
+  @IsString()
+  @IsNotEmpty({ message: '请填写标题' })
+  title!: string;
+
+  @IsString()
+  @IsNotEmpty({ message: '请填写问题与内容说明' })
+  description!: string;
+
+  @IsString()
+  @IsNotEmpty({ message: '请指定负责人' })
+  assigneeId!: string;
+
+  @IsArray()
+  @ArrayMinSize(1, { message: '至少需要一条可核对的验收条件' })
+  @IsString({ each: true })
+  criteria!: string[];
+}
+
+export class EditRequirementDto {
+  @IsOptional()
+  @IsString()
+  title?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  criteria?: string[];
+}
+
+@Controller('requirements')
+@UseGuards(AuthGuard)
+export class RequirementsController {
+  constructor(private readonly service: RequirementsService) {}
+
+  @Get()
+  async list(
+    @CurrentUser() user: ResolvedSession,
+    @Query('state') state?: string,
+    @Query('scope') scope?: string,
+    @Query('keyword') keyword?: string,
+  ) {
+    if (state && !(ALL_STATES as readonly string[]).includes(state)) {
+      throw Errors.validation('状态筛选值不合法');
+    }
+    const normalizedScope =
+      scope === 'proposed' || scope === 'assigned' ? scope : ('all' as const);
+    return this.service.list(user.userId, {
+      state: state as RequirementState | undefined,
+      scope: normalizedScope,
+      keyword,
+    });
+  }
+
+  @Post()
+  async create(
+    @CurrentUser() user: ResolvedSession,
+    @Body() dto: CreateRequirementDto,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.service.create(user.userId, dto, {
+      idempotencyKey: idempotencyKeyOf(idempotencyKey),
+    });
+  }
+
+  @Get(':id')
+  async detail(@CurrentUser() user: ResolvedSession, @Param('id') id: string) {
+    return this.service.detail(user.userId, id);
+  }
+
+  @Get(':id/history')
+  async history(@CurrentUser() user: ResolvedSession, @Param('id') id: string) {
+    return this.service.history(user.userId, id);
+  }
+
+  @Patch(':id')
+  async edit(
+    @CurrentUser() user: ResolvedSession,
+    @Param('id') id: string,
+    @Body() dto: EditRequirementDto,
+    @Headers('if-match') ifMatch?: string,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.service.edit(user.userId, id, dto, {
+      expectedRowVersion: parseVersionHeader(ifMatch),
+      idempotencyKey: idempotencyKeyOf(idempotencyKey),
+    });
+  }
+
+  @Post(':id/start')
+  async start(
+    @CurrentUser() user: ResolvedSession,
+    @Param('id') id: string,
+    @Headers('if-match') ifMatch?: string,
+    @Headers('idempotency-key') idempotencyKey?: string,
+  ) {
+    return this.service.start(user.userId, id, {
+      expectedRowVersion: parseVersionHeader(ifMatch),
+      idempotencyKey: idempotencyKeyOf(idempotencyKey),
+    });
+  }
+}

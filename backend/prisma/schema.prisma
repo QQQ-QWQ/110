@@ -1,0 +1,182 @@
+// ============================================================
+// 小团队需求与验收协作台 —— 数据模型
+// 领域内核：四态状态机 + 资源级权限 + 追加式提交 + 幂等 + 乐观锁
+// ============================================================
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// 用户（预置测试账号，不实现注册）
+model User {
+  id           String   @id @default(uuid())
+  account      String   @unique
+  name         String
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  proposedRequirements Requirement[]     @relation("Proposer")
+  assignedRequirements Requirement[]     @relation("Assignee")
+  submissions          Submission[]
+  reviews              Review[]
+  events               Event[]
+  sessions             Session[]
+  idempotencyRecords   IdempotencyRecord[]
+
+  @@map("app_user")
+}
+
+/// 会话（服务端存储，登出即删除 —— 因此不使用无状态 JWT）
+model Session {
+  id         String   @id @default(uuid())
+  userId     String   @map("user_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+  lastSeenAt DateTime @default(now()) @map("last_seen_at")
+  expiresAt  DateTime @map("expires_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+/// 需求（四态 + 乐观锁 row_version + 当前提交指针）
+model Requirement {
+  id                  String   @id @default(uuid())
+  title               String
+  description         String
+  state               String   @default("PENDING")
+  proposerId          String   @map("proposer_id")
+  assigneeId          String   @map("assignee_id")
+  rowVersion          Int      @default(1) @map("row_version")
+  currentSubmissionId String?  @map("current_submission_id")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @default(now()) @map("updated_at")
+
+  proposer User @relation("Proposer", fields: [proposerId], references: [id])
+  assignee User @relation("Assignee", fields: [assigneeId], references: [id])
+
+  criteria    Criterion[]
+  submissions Submission[]
+  events      Event[]
+
+  @@index([proposerId, state])
+  @@index([assigneeId, state])
+  @@map("requirement")
+}
+
+/// 验收条件（开始处理后冻结，不可修改）
+model Criterion {
+  id            String @id @default(uuid())
+  requirementId String @map("requirement_id")
+  seq           Int
+  text          String
+
+  requirement Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  checks      ReviewCheck[]
+
+  @@unique([requirementId, seq])
+  @@map("criterion")
+}
+
+/// 成果提交（追加式：V1 / V2 ... 后者不覆盖前者）
+model Submission {
+  id            String   @id @default(uuid())
+  requirementId String   @map("requirement_id")
+  submissionNo  Int      @map("submission_no")
+  note          String
+  submittedById String   @map("submitted_by")
+  submittedAt   DateTime @default(now()) @map("submitted_at")
+
+  requirement Requirement          @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  submittedBy User                 @relation(fields: [submittedById], references: [id])
+  artifacts   SubmissionArtifact[]
+  reviews     Review[]
+
+  @@unique([requirementId, submissionNo])
+  @@map("submission")
+}
+
+/// 成果链接（一次提交可含多个 HTTP/HTTPS 链接）
+model SubmissionArtifact {
+  id           String @id @default(uuid())
+  submissionId String @map("submission_id")
+  seq          Int
+  url          String
+
+  submission Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, seq])
+  @@map("submission_artifact")
+}
+
+/// 验收记录（RETURN 退回 / COMPLETE 通过）
+model Review {
+  id           String   @id @default(uuid())
+  submissionId String   @map("submission_id")
+  action       String
+  reason       String?
+  reviewerId   String   @map("reviewer_id")
+  reviewedAt   DateTime @default(now()) @map("reviewed_at")
+
+  submission Submission    @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  reviewer   User          @relation(fields: [reviewerId], references: [id])
+  checks     ReviewCheck[]
+
+  @@map("review")
+}
+
+/// 逐项验收结果（针对当前提交的每条验收条件）
+model ReviewCheck {
+  id          String  @id @default(uuid())
+  reviewId    String  @map("review_id")
+  criterionId String  @map("criterion_id")
+  passed      Boolean
+
+  review    Review    @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  criterion Criterion @relation(fields: [criterionId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewId, criterionId])
+  @@map("review_check")
+}
+
+/// 业务历史事件（仅记成功事件；seq = 该需求当时的 row_version）
+model Event {
+  id            String   @id @default(uuid())
+  requirementId String   @map("requirement_id")
+  seq           Int
+  eventType     String   @map("event_type")
+  actorId       String   @map("actor_id")
+  payloadJson   Json     @map("payload_json")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  requirement Requirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  actor       User        @relation(fields: [actorId], references: [id])
+
+  @@unique([requirementId, seq])
+  @@map("event")
+}
+
+/// 幂等记录（占坑与业务同事务；同键不同内容拒绝）
+model IdempotencyRecord {
+  id             String   @id @default(uuid())
+  userId         String   @map("user_id")
+  operation      String
+  idempotencyKey String   @map("idempotency_key")
+  requestHash    String   @map("request_hash")
+  status         String   @default("PROCESSING")
+  responseStatus Int?     @map("response_status")
+  responseBody   Json?    @map("response_body")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, operation, idempotencyKey])
+  @@map("idempotency_record")
+}

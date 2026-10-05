@@ -1,0 +1,32 @@
+# ============================================================
+# 行尾策略 —— 强制 LF
+#
+# 原因：Windows 上 git 默认 core.autocrlf=true，克隆时会把 LF 转成 CRLF。
+# 一旦 shell 脚本带上 CRLF，Linux 容器内会直接报错：
+#     $'\r': command not found
+# 因此这里显式声明关键文件必须使用 LF，覆盖 autocrlf。
+# ============================================================
+
+# 默认：仓库内统一 LF，检出时也保持 LF
+* text=auto eol=lf
+
+# 容器内执行的脚本与构建文件：必须是 LF
+*.sh          text eol=lf
+Dockerfile    text eol=lf
+*.dockerignore text eol=lf
+*.conf        text eol=lf
+*.yml         text eol=lf
+*.yaml        text eol=lf
+
+# 二进制文件不做任何转换
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.svg   text eol=lf
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.zip   binary
+*.pdf   binary

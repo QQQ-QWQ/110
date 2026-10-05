@@ -51,7 +51,11 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 3000
 
+# 健康检查用 **readiness**（真实探测数据库），而不是 liveness：
+#   · 容器编排把它当作「能不能接流量」的依据，因此必须反映依赖状态；
+#   · 若这里探 liveness，数据库挂掉时容器仍报健康 → 流量照打 → 全是 500。
+# 用 node 内置 fetch，不引入 curl/wget（Debian slim 里没有）。
 HEALTHCHECK --interval=10s --timeout=5s --start-period=40s --retries=6 \
-    CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+    CMD node -e "fetch('http://127.0.0.1:3000/api/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

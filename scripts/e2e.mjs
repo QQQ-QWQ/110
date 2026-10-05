@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * 端到端验证脚本 —— DEM-01 ~ DEM-08 + DEM-11（列表游标分页）+ DEM-12（请求编号）
- *                    + DEM-13（详情/历史分页）+ DEM-14（登录并发闸门）
+ *                    + DEM-13（详情/历史分页）+ DEM-14（登录并发闸门）+ DEM-15（健康探针）
  *
  * 把《docs/测试与验证记录.md》§3 的手工 curl 步骤收敛成**一条可重复执行的命令**，
  * 输出「期望状态码 / 实际状态码」对照表，全部通过时退出码为 0。
@@ -675,6 +675,38 @@ async function main() {
     body: { account: 'alice', password: PASSWORD },
   });
   check('DEM-14', '突发之后仍能正常登录（许可未泄漏）', 200, afterBurst.status);
+
+  // ══════════════════ DEM-15 健康探针拆分（S6）══════════════════
+  // liveness 只证明「进程能响应」，readiness 真实探测依赖。
+  // 两者混用是运维上的经典自伤：把数据库检查放进 liveness，数据库一抖
+  // 编排系统就会**重启进程**，而重启对「数据库不可用」毫无帮助。
+  // 这里能验证的是**三者的语义标签与状态码**；「数据库不可用时 readiness
+  // 返回 503」需要停库，属人工验证项（见 DEM-09），单测已覆盖该分支。
+  const live = await call('GET', '/health/live');
+  check('DEM-15', 'liveness → 200', 200, live.status);
+  check(
+    'DEM-15',
+    'liveness 标注 probe=liveness 且 ok=true',
+    true,
+    live.json?.probe === 'liveness' && live.json?.ok === true,
+  );
+
+  const ready = await call('GET', '/health/ready');
+  check('DEM-15', 'readiness → 200（数据库可用时）', 200, ready.status);
+  check(
+    'DEM-15',
+    'readiness 标注 probe=readiness 且 database=ok',
+    true,
+    ready.json?.probe === 'readiness' && ready.json?.database === 'ok',
+  );
+
+  const legacy = await call('GET', '/health');
+  check(
+    'DEM-15',
+    '★ /health 仍是 readiness 的别名（兼容既有 healthcheck）',
+    'readiness',
+    legacy.json?.probe,
+  );
 
   // ══════════════════ 输出报告 ══════════════════
 

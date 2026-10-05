@@ -65,7 +65,15 @@ services:
     ports:
       - "${WEB_PORT:-8080}:80"
     depends_on:
-      - api
+      api:
+        # 报告 §5.2 S3：不能只写 `- api`。
+        # 简写形式只保证「容器已创建」，nginx 仍可能在 api 就绪前开始接收请求，
+        # 于是首页可用但 /api 返回 502 —— 一个只在启动窗口出现、之后自愈的故障，
+        # 排查时最容易归因到「网络问题」。
+        # 用 service_healthy 把这段窗口消掉：api 的 HEALTHCHECK 定义在
+        # backend/Dockerfile（node -e fetch 探测 /api/health/ready），
+        # 所以它真的会去探数据库，而不只是「进程起来了」。
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

@@ -11,10 +11,11 @@
     "seed": "node dist/seed.js",
     "prisma:generate": "prisma generate",
     "prisma:deploy": "prisma migrate deploy",
+    "prisma:format": "prisma format",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.js\"",
-    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.js\"",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.js\" \"../scripts/**/*.mjs\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.js\" \"../scripts/**/*.mjs\"",
     "test": "npm run build && node --test test/*.test.js"
   },
   "dependencies": {

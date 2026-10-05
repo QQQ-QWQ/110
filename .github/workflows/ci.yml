@@ -26,66 +26,29 @@ concurrency:
 jobs:
   # ─────────────────────────────────────────────
   # 仓库卫生：机械性检查（标准 §3.E4 / §3.B5 / §3.E）
+  #
+  # 这里**不**重新实现检查逻辑，而是直接调用 `scripts/preflight.mjs`。
+  # 本地开发者跑的是同一个脚本（只是额外含工具层的 Prisma 格式 / Prettier）。
+  # 于是「本地 preflight 绿」与「CI hygiene 绿」是同一件事 ——
+  # 不会出现两套各自漂移的检查，也不会出现「本地过了 CI 不过」。
+  #
+  # 代价：这些检查在 CI 里合并成了一个步骤，粒度不如从前。
+  # 但这正是该脚本存在的意义：拿不到 CI 日志时，本地跑一遍就能定位。
   # ─────────────────────────────────────────────
   hygiene:
-    name: 仓库卫生（行尾 / 密钥 / 构建产物）
+    name: 仓库卫生（行尾 / 密钥 / 构建产物 / lockfile）
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
-      - name: 检查 shell 脚本行尾必须为 LF
-        run: |
-          set -euo pipefail
-          bad=$(grep -rlU $'\r' --include='*.sh' --exclude-dir=node_modules . || true)
-          if [ -n "$bad" ]; then
-            echo "::error::以下 shell 脚本含 CRLF 行尾，Linux 容器内会报 \$'\\r': command not found"
-            echo "$bad"
-            exit 1
-          fi
-          echo "✅ shell 脚本行尾均为 LF"
+      # preflight.mjs 是纯 Node 脚本（零运行时依赖），不需要 npm ci
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
 
-      - name: 检查 Dockerfile / compose / nginx 行尾必须为 LF
-        run: |
-          set -euo pipefail
-          files=$(find . -path ./node_modules -prune -o \
-            \( -name 'Dockerfile' -o -name 'docker-compose.yml' -o -name '*.conf' \) -print)
-          bad=""
-          for f in $files; do
-            if grep -qU $'\r' "$f" 2>/dev/null; then bad="$bad$f\n"; fi
-          done
-          if [ -n "$bad" ]; then
-            echo "::error::以下文件含 CRLF 行尾，容器内执行会失败"
-            printf "$bad"
-            exit 1
-          fi
-          echo "✅ 容器相关文件行尾均为 LF"
-
-      - name: 检查真实密钥文件未入库（标准 §3.B5）
-        run: |
-          set -euo pipefail
-          if [ -f .env ]; then
-            echo "::error::.env 不应入库（应只提交 .env.example）"
-            exit 1
-          fi
-          tracked=$(git ls-files | grep -E '(^|/)\.env(\.local|\.production)?$' || true)
-          if [ -n "$tracked" ]; then
-            echo "::error::检测到被跟踪的环境变量文件："
-            echo "$tracked"
-            exit 1
-          fi
-          echo "✅ 未发现入库的真实密钥文件"
-
-      - name: 检查构建产物与依赖未入库
-        run: |
-          set -euo pipefail
-          bad=$(git ls-files | grep -E '(^|/)node_modules/|(^|/)dist/|\.tsbuildinfo$' || true)
-          if [ -n "$bad" ]; then
-            echo "::error::以下构建产物不应入库："
-            echo "$bad"
-            exit 1
-          fi
-          echo "✅ 未发现入库的构建产物"
+      - name: 运行仓库卫生检查（scripts/preflight.mjs --mechanical）
+        run: node scripts/preflight.mjs --mechanical
 
   # ─────────────────────────────────────────────
   # 后端：类型检查 + 构建 + Prisma 校验

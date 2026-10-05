@@ -14,7 +14,7 @@
 | **当前状态** | **已修复并验证**：commit `603cedc` 推送后 CI 由「4 次全红」转绿，此后 run #6 ~ #11 **连续全绿**。最新 run #11（`d88e3b6`）为 **6 个 job、66 个步骤全部 success**（唯一 skipped 的是 `if: failure()` 的日志步骤，按设计跳过）。 |
 | **可扩展性** | 读路径存在 **2 处会随数据量线性恶化**的无界查询（列表无分页、详情含无界事件流）；横向扩展有 **2 个硬阻塞**（`container_name` 阻断 `--scale`、nginx 不在运行时重解析 DNS）。写路径（乐观锁 + 幂等）本身是可横向扩展的。 |
 | **稳定性** | 核心写路径的事务/幂等/乐观锁设计是**扎实的**；主要缺口在**运维面**：幂等记录与会话过期行无清理（无界增长）、连接池与语句超时未显式配置、无 request-id 关联日志、`web` 未等服务健康即启动。 |
-| **最高优先级动作** | **P0 共 6 项已全部落地**（见 §6）：CI 起服务跑 e2e、列表游标分页、数据保留清理、连接池与超时、解除横向扩展阻塞、迁移漂移检测。5 项有自动化验证（单测 / 真实数据库 / e2e / CI）；**唯一例外是 E3 的 nginx 改动**，只做了结构解析校验（本环境无 Docker 引擎与 nginx 二进制）。 |
+| **最高优先级动作** | **P0 共 6 项已全部落地**（见 §6）：CI 起服务跑 e2e、列表游标分页、数据保留清理、连接池与超时、解除横向扩展阻塞、迁移漂移检测。5 项有自动化验证（单测 / 真实数据库 / e2e / CI）；**唯一例外是 E3 的 nginx 改动**，只做了结构解析校验（本环境无 Docker 引擎与 nginx 二进制）。**P1 已启动**：C4 本地前置检查落地（`scripts/preflight.mjs`，CI 与本地同源，见 §5.3、§7.1）。 |
 
 ---
 
@@ -486,7 +486,7 @@ if npx prisma migrate deploy; then ...
 | C1 | ✅ **已完成** | schema 格式门禁、`validate` 前置、`DATABASE_URL` 注入、CHECK 约束清单扩展至 15 条、job 超时。 | — |
 | C2 | **迁移漂移检测** | 在 `migrations` job（已有 postgres service）用 `prisma migrate diff --from-migrations ./prisma/migrations --to-schema-datamodel ./prisma/schema.prisma --shadow-database-url <复用 service 的第二个库> --exit-code`。 | 这是**最能防止「schema 与迁移悄悄不一致」**的检查，恰好针对本架构「手写 SQL + schema 双真相」的结构性风险。代价：需要 shadow 库，且 `migrate diff` 对 `--from-migrations` 会重放全部迁移，增加 CI 时间（估 +30~60s）。 |
 | C3 | **已应用迁移不可修改** | 检测 `prisma/migrations/` 下**已存在目录**内文件被修改 → 告警（新增目录放行）。 | 需要在 CI 中对比 base 分支，实现略复杂（`git diff --name-only ${{ github.event.pull_request.base.sha }}...HEAD -- prisma/migrations`）。纯 push 触发时无 base，需降级为「跳过并提示」。 |
-| C4 | **本地前置检查** | `scripts/preflight.mjs`：一键复跑 CI 的机械检查（schema 格式、行尾、Prettier、lockfile 同步）。 | 把反馈周期从 3~5 分钟压到 1 秒。代价：需要开发者记得跑 —— 用 `pre-push` 钩子可强制，但钩子可被 `--no-verify` 绕过（这是设计使然，不是缺陷）。 |
+| C4 | ✅ **已落地** | `scripts/preflight.mjs`：一键复跑 CI 的机械检查。**并且 CI 的 `hygiene` job 直接调用它**（`--mechanical`），于是「本地 preflight 绿」与「CI hygiene 绿」是同一件事，不存在两套会漂移的检查。 | 把反馈周期从 3~5 分钟压到 **1 秒**。代价有两处，都已记录：① 这些检查在 CI 里合并成了一个步骤，粒度不如从前 —— 但这正是该脚本的意义（拿不到日志时本地跑一遍就能定位）；② 需要开发者记得跑，用 `pre-push` 钩子可强制，但钩子可被 `--no-verify` 绕过（设计使然，不是缺陷）。 |
 | C5 | **分支保护声明** | 在 `docs/代码审查标准与流程.md` 明确 main 的 required status checks，作为交付验收项。 | 仓库内的文档无法强制 GitHub 侧配置；但**把「已配置分支保护」写成验收项**能确保它不被遗忘。 |
 | **C6** | ✅ **已落地**（**本轮新增，优先级最高**） | 新增 `e2e` job：postgres service → `prisma generate` + `migrate deploy` → `npm run build` → `node dist/seed.js` → 种子完整性断言 → `node dist/main.js` 等就绪 → `node scripts/e2e.mjs`（DEM-00~08 + DEM-11，56 项断言）。 | **这是唯一能拦住「跨层缺陷」的检查。** 见下方说明 —— 它的必要性已由本轮实跑直接证明。 |
 
@@ -581,7 +581,14 @@ if npx prisma migrate deploy; then ...
 
 ### P1 —— 应当做（稳定性运维面）
 
-E2 详情分页、E4 登录并发闸门、S3 `web` 等健康、S4 entrypoint 可诊断、S5 request-id、C4 本地前置检查。
+| 项 | 状态 |
+|---|---|
+| **C4 本地前置检查** | ✅ **已完成** —— `scripts/preflight.mjs`（8 项检查）；CI 的 `hygiene` job 改为**直接调用它**，本地与 CI 同源。6 项负例验证见 §7 |
+| S5 request-id 贯穿日志 | ⏳ 待做（轻量版：只改过滤器与日志） |
+| E2 详情/历史分页 | ⏳ 待做 |
+| E4 登录并发闸门 | ⏳ 待做 |
+| S3 `web` 等 `api` 健康 | ⏳ 待做 —— **需 Docker 引擎**才能验证，本环境不具备 |
+| S4 entrypoint 错误可诊断 | ⏳ 待做 —— **需 Docker 引擎**才能验证，本环境不具备 |
 
 ### P2 —— 可延后（当前规模收益有限）
 
@@ -619,11 +626,32 @@ E5 会话缓存（**需先解决与「登出即时失效」的冲突**）、S6 l
 | S1 真实库验证 | `node scripts/verify-retention.mjs` → 5/5 通过（含「PROCESSING 超 100h 必须保留」） |
 | S2 生效验证 | `SHOW statement_timeout` 由 `0` → `10s`（`options=-c%20statement_timeout%3D10000`） |
 | E1 端到端验证 | `node scripts/e2e.mjs` → **56 项断言 0 失败**（含 DEM-11 共 12 项） |
+| C4 preflight 全绿 | `node scripts/preflight.mjs` → **8/8 通过**（机械层 5 项 + 工具层 3 项） |
+| C4 preflight 负例验证 | 逐项制造违规，**6/6 均被检出**（退出码 1，且只有该项报红）—— 矩阵见 §7.1 |
 | CHECK 约束清单 | `grep -oE '"[a-z_]+_chk"' backend/prisma/migrations/0001_init/migration.sql \| sort -u` → 15 条 |
 | 幂等记录无清理（**审核时**，现已修复） | `grep -rn "idempotencyRecord" backend/src \| grep -iE "delete\|clean\|purge"` → 当时为空 |
 | 无分页（**审核时**，现已修复） | `grep -rn "take:\|skip:\|cursor" backend/src` → 当时为空 |
 | 无限流（**仍未做**，属 P2） | `grep -rn "throttle\|rateLimit" backend/src` → 空 |
 | 横扩阻塞（**审核时**，现已修复） | 当时 `docker-compose.yml:36` `container_name: da-api`；`frontend/nginx.conf:26` `proxy_pass http://api:3000;` |
+
+### 7.1 C4 的负例验证：这些检查「会咬人」吗？
+
+一条从不报红的检查等于没有检查。因此 preflight 的每一项都**制造一次真实违规**验证过：
+
+| # | 检查项 | 制造的违规 | 结果 |
+|---|---|---|---|
+| 1 | 行尾 | 把 `backend/docker-entrypoint.sh` 写成 CRLF | ✅ 退出码 1，只报该检查 |
+| 2 | 密钥未入库 | `git add -f .env.production` | ✅ 退出码 1，只报该检查 |
+| 3 | 构建产物未入库 | `git add -f backend/dist/_probe.js` | ✅ 退出码 1，只报该检查 |
+| 4 | lockfile 同步 | 往 `backend/package.json` 加一个未安装的依赖 | ✅ 退出码 1，只报该检查 |
+| 5 | Prisma schema 格式 | 把 `id` 行缩进从 2 改成 4 空格**并入库** | ✅ 退出码 1，只报该检查 |
+| 6 | Prettier | 往 `main.ts` 追加一行未格式化的代码 | ✅ 退出码 1，只报该检查 |
+
+每一项测试后都还原现场并复跑，确认回到全绿（退出码 0）。
+
+**第 5 项的细节值得记一笔**：检查的实现是「先 `prisma format`，再 `git diff --quiet`」。所以只把文件改坏、**不入库**是不会报红的 —— 因为 format 会把工作区改回与 HEAD 一致，此时确实没有问题。必须模拟「**有人把未格式化的 schema 提交了**」（即改动已进索引）才会报红。这一点在测试时容易误判为「检查失灵」。
+
+**一个必须说明的局限**：本机 `core.autocrlf=true` 会在 `git add` 时把 CRLF 规范化成 LF，因此「索引里存在 CRLF」这一状态**在本机几乎无法复现**（上面第 1 项测的是「关键文件在工作区是 CRLF」这条，它对应 `docker build` 的真实故障：构建上下文取自工作区而非索引）。索引层的 CRLF 只在 CI（`autocrlf=false`）或 `.gitattributes` 被人改坏时才可能出现 —— 也就是说，这一条同时也是「**有人删掉 `* text=auto eol=lf`**」的回归守卫。
 
 ---
 

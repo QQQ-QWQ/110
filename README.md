@@ -186,7 +186,9 @@ docker compose up --build
 │       └── main.ts
 │
 ├── scripts/
-│   └── e2e.mjs                 # 端到端验证脚本（DEM-01~08，一条命令产出对照表）
+│   ├── preflight.mjs           # 本地前置检查：CI 机械检查的一键复跑（C4）
+│   ├── e2e.mjs                 # 端到端验证脚本（DEM-01~08 + DEM-11，一条命令产出对照表）
+│   └── verify-retention.mjs    # 数据保留清理的真实库验证（S1）
 │
 ├── frontend/
 │   ├── Dockerfile              # 多阶段构建 → Nginx 静态托管
@@ -194,7 +196,7 @@ docker compose up --build
 │   ├── eslint.config.js        # ESLint 扁平配置（含 vue 插件）
 │   └── src/
 │       ├── api.ts              # 统一客户端（自动附加 If-Match / Idempotency-Key）
-│       ├── api.test.ts         # 15 个测试：错误映射 / 刷新判定 / 写请求契约
+│       ├── api.test.ts         # 17 个测试：错误映射 / 刷新判定 / 写请求契约 / 分页参数
 │       ├── router.ts           # 路由与登录态守卫
 │       ├── styles/             # 设计令牌 → 基础 → 组件 → 响应式（四层）
 │       ├── composables/        # Toast / 异步动作 / 当前用户 / 滚动锁 / 焦点陷阱 / 断点
@@ -259,13 +261,28 @@ npm run dev                      # http://localhost:5173，/api 自动代理到 
 **一键端到端验证（推荐）**
 
 ```bash
-docker compose up --build -d          # 启动三服务
-node scripts/e2e.mjs                  # 跑 DEM-01 ~ DEM-08 + DEM-11，输出「期望 / 实际」对照表
-node scripts/e2e.mjs                  # 全部通过时退出码 0，可直接用于 CI
-node scripts/verify-retention.mjs     # 数据保留清理：插入样本行 → 跑一次清理 → 断言删留边界
+node scripts/preflight.mjs            # ① 本地前置检查：CI 机械检查的一键复跑（1 秒内出结果）
+docker compose up --build -d          # ② 启动三服务
+node scripts/e2e.mjs                  # ③ 跑 DEM-01 ~ DEM-08 + DEM-11，输出「期望 / 实际」对照表
+node scripts/verify-retention.mjs     # ④ 数据保留清理：插入样本行 → 跑一次清理 → 断言删留边界
 ```
 
 脚本不依赖任何第三方包（用 Node 22 内置 `fetch`），幂等键带每次运行唯一的前缀，因此**可反复执行**而不会命中上一轮的幂等记录。除断言外还会输出「观察项」，把**文档预期与代码实际行为不一致**的地方直接暴露出来，而不是默默通过。
+
+**本地前置检查（`scripts/preflight.mjs`）—— 推送前 1 秒知道会不会红**
+
+| 层 | 检查项 | 依赖 |
+| --- | --- | --- |
+| 机械层 | 行尾（索引 + 关键文件必须 LF）、密钥文件未入库、构建产物未入库、lockfile 与 `package.json` 同步 | 无（纯 git + fs） |
+| 工具层 | Prisma schema 已格式化、前后端 Prettier | 需先 `npm ci` |
+
+```bash
+node scripts/preflight.mjs               # 全部检查
+node scripts/preflight.mjs --mechanical  # 仅机械层（CI 的 hygiene job 用的就是这个）
+node scripts/preflight.mjs --fix         # 能自动修的顺手修掉（行尾 / 格式化）
+```
+
+CI 的 `hygiene` job **直接调用同一个脚本**，因此「本地 preflight 绿」与「CI hygiene 绿」是同一件事 —— 不存在两套会各自漂移的检查，也不会出现「本地过了 CI 不过」。8 项检查都经过**负例验证**（逐项制造违规确认会报红），矩阵见报告 §7.1。
 
 ---
 
@@ -357,7 +374,7 @@ cd frontend && npm run format:check && npm run lint && npm run typecheck && npm 
 | E3 解除横扩阻塞 | 去 `container_name`；nginx `resolver` + 变量式 `proxy_pass` | ⚠️ 仅配置结构校验（无 Docker 引擎 / nginx 二进制） |
 | C2 迁移漂移检测 | `prisma migrate diff --exit-code` | ✅ 本地双向验证 + run #10 |
 
-**已知质量缺口（诚实披露）**：尚未接入本地 `pre-commit` 钩子与依赖漏洞扫描（`npm audit` / Dependabot），见标准 §6.5。单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互；跨层端到端行为由 `scripts/e2e.mjs` 覆盖（DEM-00~08 + DEM-11，已实跑 **56/56** 通过），并**已接入 CI**（`e2e` job，见上）。`docker compose up --build` 三容器一键启动、nginx 反代与命名卷挂载尚未实测（本机 Docker 引擎不可用）—— 这是当前门禁体系**最后一处空白**：`compose` job 只校验配置文件的语法与变量插值，并不真正起容器。**E3 的 nginx 改动因此只做了结构解析校验，语义未经验证** —— 若 `docker compose up` 后 `/api/` 返回 502，应优先检查该处（`resolver` + 变量式 `proxy_pass`）。DEM-09（停库降级为通用 500）与 DEM-10（重启后数据不丢）需要操作数据库进程，无法在 `e2e` job 内完成，仍属人工验证项（DEM-10 以「重启数据库进程」替代「容器重建」，未验证命名卷保留行为）。未做并发压测。前端组件测试为 SSR 渲染断言，不含 jsdom 点击交互模拟。
+**已知质量缺口（诚实披露）**：已有 `scripts/preflight.mjs` 可一键复跑 CI 的机械检查，但**尚未把它挂到 `pre-commit` / `pre-push` 钩子上**（目前仍需开发者主动跑），也尚未接入依赖漏洞扫描（`npm audit` / Dependabot），见标准 §6.5。单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互；跨层端到端行为由 `scripts/e2e.mjs` 覆盖（DEM-00~08 + DEM-11，已实跑 **56/56** 通过），并**已接入 CI**（`e2e` job，见上）。`docker compose up --build` 三容器一键启动、nginx 反代与命名卷挂载尚未实测（本机 Docker 引擎不可用）—— 这是当前门禁体系**最后一处空白**：`compose` job 只校验配置文件的语法与变量插值，并不真正起容器。**E3 的 nginx 改动因此只做了结构解析校验，语义未经验证** —— 若 `docker compose up` 后 `/api/` 返回 502，应优先检查该处（`resolver` + 变量式 `proxy_pass`）。DEM-09（停库降级为通用 500）与 DEM-10（重启后数据不丢）需要操作数据库进程，无法在 `e2e` job 内完成，仍属人工验证项（DEM-10 以「重启数据库进程」替代「容器重建」，未验证命名卷保留行为）。未做并发压测。前端组件测试为 SSR 渲染断言，不含 jsdom 点击交互模拟。
 
 ---
 

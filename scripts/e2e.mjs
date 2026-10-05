@@ -159,7 +159,12 @@ async function main() {
   const carolList = await call('GET', '/requirements', { cookie: carol });
   // 列表响应已改为「一页 + 分页信息」（{ items, pageInfo }），不再是裸数组。
   // 这里同时断言形状，让「响应结构被改回去」这类回归也能被发现。
-  check('DEM-01', '列表响应为分页结构 { items, pageInfo }', true, Array.isArray(carolList.json?.items));
+  check(
+    'DEM-01',
+    '列表响应为分页结构 { items, pageInfo }',
+    true,
+    Array.isArray(carolList.json?.items),
+  );
   const carolItems = Array.isArray(carolList.json?.items) ? carolList.json.items : [];
   const carolSees = carolItems.some((r) => r.id === rid);
   check('DEM-01', '无关账号列表中不可见（carol）', false, carolSees);
@@ -468,7 +473,12 @@ async function main() {
   check('DEM-11', 'limit 收敛到上限 100', 100, hugeLimit.json?.pageInfo?.limit);
 
   const noCursor = await call('GET', '/requirements', { cookie: alice });
-  check('DEM-11', '不传游标 → 取第一页且 hasMore 为布尔', true, typeof noCursor.json?.pageInfo?.hasMore === 'boolean');
+  check(
+    'DEM-11',
+    '不传游标 → 取第一页且 hasMore 为布尔',
+    true,
+    typeof noCursor.json?.pageInfo?.hasMore === 'boolean',
+  );
 
   // ══════════════════ 输出报告 ══════════════════
 

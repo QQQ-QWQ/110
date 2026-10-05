@@ -88,7 +88,8 @@ async function main() {
 
   // ── 断言 ──
   const exists = {
-    expiredSession: (await prisma.session.findUnique({ where: { id: expiredSession.id } })) !== null,
+    expiredSession:
+      (await prisma.session.findUnique({ where: { id: expiredSession.id } })) !== null,
     validSession: (await prisma.session.findUnique({ where: { id: validSession.id } })) !== null,
     oldCompleted:
       (await prisma.idempotencyRecord.findUnique({ where: { id: oldCompleted.id } })) !== null,

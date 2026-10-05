@@ -1,13 +1,10 @@
-import {
-  ArrayMinSize,
-  IsArray,
-  IsNotEmpty,
-  IsString,
-} from 'class-validator';
+import { ArrayMinSize, IsArray, IsNotEmpty, IsString } from 'class-validator';
 import {
   Body,
   Controller,
   Headers,
+  HttpCode,
+  HttpStatus,
   Param,
   Post,
   UseGuards,
@@ -34,6 +31,7 @@ export class SubmissionsController {
   constructor(private readonly service: SubmissionsService) {}
 
   @Post()
+  @HttpCode(HttpStatus.CREATED)
   async submit(
     @CurrentUser() user: ResolvedSession,
     @Param('requirementId') requirementId: string,

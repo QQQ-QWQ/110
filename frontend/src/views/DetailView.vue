@@ -291,13 +291,7 @@ async function doReview(action: 'RETURN' | 'COMPLETE'): Promise<void> {
           </div>
 
           <div v-if="detail.nextActions.length > 0" class="row mt-2">
-            <button
-              v-if="can('EDIT')"
-              class="btn"
-              type="button"
-              :disabled="busy"
-              @click="openEdit"
-            >
+            <button v-if="can('EDIT')" class="btn" type="button" :disabled="busy" @click="openEdit">
               {{ actionHint('EDIT') }}
             </button>
             <button
@@ -361,9 +355,7 @@ async function doReview(action: 'RETURN' | 'COMPLETE'): Promise<void> {
           <h3>提交与验收记录（{{ detail.submissions.length }} 次提交）</h3>
         </div>
         <div class="card-body">
-          <div v-if="detail.submissions.length === 0" class="faint small">
-            负责人尚未提交成果。
-          </div>
+          <div v-if="detail.submissions.length === 0" class="faint small">负责人尚未提交成果。</div>
 
           <div v-for="s in detail.submissions" :key="s.id" class="submission">
             <div class="submission-head">
@@ -375,7 +367,9 @@ async function doReview(action: 'RETURN' | 'COMPLETE'): Promise<void> {
               >
                 当前提交
               </span>
-              <span class="faint small">{{ s.submittedBy.name }} 提交于 {{ fmt(s.submittedAt) }}</span>
+              <span class="faint small"
+                >{{ s.submittedBy.name }} 提交于 {{ fmt(s.submittedAt) }}</span
+              >
             </div>
 
             <div class="submission-body">
@@ -390,19 +384,15 @@ async function doReview(action: 'RETURN' | 'COMPLETE'): Promise<void> {
               </ul>
 
               <template v-if="s.reviews.length > 0">
-                <div
-                  v-for="(r, i) in s.reviews"
-                  :key="i"
-                  class="review-block"
-                  :class="r.action"
-                >
+                <div v-for="(r, i) in s.reviews" :key="i" class="review-block" :class="r.action">
                   <div class="review-head">
                     <span>{{ r.action === 'RETURN' ? '退回修改' : '确认完成' }}</span>
                     <span class="faint">· {{ r.reviewer.name }} · {{ fmt(r.reviewedAt) }}</span>
                   </div>
 
                   <div v-if="r.reason" class="mb-1">
-                    <strong>退回原因：</strong><span class="prose" style="display: inline">{{ r.reason }}</span>
+                    <strong>退回原因：</strong
+                    ><span class="prose" style="display: inline">{{ r.reason }}</span>
                   </div>
 
                   <ul class="check-list">
@@ -505,7 +495,9 @@ async function doReview(action: 'RETURN' | 'COMPLETE'): Promise<void> {
           </div>
         </div>
         <div class="modal-foot">
-          <button class="btn" type="button" :disabled="busy" @click="submitOpen = false">取消</button>
+          <button class="btn" type="button" :disabled="busy" @click="submitOpen = false">
+            取消
+          </button>
           <button class="btn btn-primary" type="button" :disabled="busy" @click="doSubmit">
             {{ busy ? '提交中…' : '提交' }}
           </button>
@@ -549,7 +541,9 @@ async function doReview(action: 'RETURN' | 'COMPLETE'): Promise<void> {
           </div>
         </div>
         <div class="modal-foot">
-          <button class="btn" type="button" :disabled="busy" @click="reviewOpen = false">取消</button>
+          <button class="btn" type="button" :disabled="busy" @click="reviewOpen = false">
+            取消
+          </button>
           <button class="btn btn-danger" type="button" :disabled="busy" @click="doReview('RETURN')">
             退回修改
           </button>

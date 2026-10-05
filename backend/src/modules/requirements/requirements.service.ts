@@ -126,8 +126,7 @@ export class RequirementsService {
     const role = assertCanRead(userId, row);
     const state = row.state as RequirementState;
 
-    const currentSubmission =
-      row.submissions.find((s) => s.id === row.currentSubmissionId) ?? null;
+    const currentSubmission = row.submissions.find((s) => s.id === row.currentSubmissionId) ?? null;
 
     return {
       id: row.id,

@@ -184,12 +184,7 @@ async function submitCreate(): Promise<void> {
           </button>
         </div>
 
-        <select
-          v-model="filters.state"
-          class="select"
-          style="width: 130px"
-          @change="load()"
-        >
+        <select v-model="filters.state" class="select" style="width: 130px" @change="load()">
           <option v-for="o in stateOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
         </select>
 
@@ -277,7 +272,12 @@ async function submitCreate(): Promise<void> {
 
           <div class="field">
             <label>标题</label>
-            <input v-model="createForm.title" class="input" maxlength="200" placeholder="一句话说明需求" />
+            <input
+              v-model="createForm.title"
+              class="input"
+              maxlength="200"
+              placeholder="一句话说明需求"
+            />
           </div>
 
           <div class="field">

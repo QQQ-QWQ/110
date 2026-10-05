@@ -72,9 +72,7 @@ export class ReviewsService {
     if (dto.action === 'RETURN') {
       reason = assertReturnReason(dto.reason);
     } else if (dto.action === 'COMPLETE') {
-      const ordered = criterionIds.map(
-        (id) => provided.find((p) => p.criterionId === id)!.passed,
-      );
+      const ordered = criterionIds.map((id) => provided.find((p) => p.criterionId === id)!.passed);
       assertAllChecksPassed(ordered);
     } else {
       throw Errors.validation('验收动作不合法');

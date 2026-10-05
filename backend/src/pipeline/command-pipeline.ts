@@ -64,8 +64,17 @@ export async function executeCommand<TResponse>(
   prisma: PrismaService,
   opts: ExecuteCommandOptions<TResponse>,
 ): Promise<ExecuteCommandResult<TResponse>> {
-  const { actorId, command, requirementId, expectedRowVersion, idempotencyKey, requestPayload } = opts;
+  const { actorId, command, requirementId, expectedRowVersion, idempotencyKey, requestPayload } =
+    opts;
   const successStatus = opts.statusCode ?? 200;
+
+  // ── ①′ 乐观锁强制前置（代码审查 R-01）──
+  // 非创建命令**必须**携带 If-Match 版本号。
+  // 若允许缺省，客户端只要不传该头即可跳过版本校验，
+  // 使「状态已变化后旧页面操作必须失败」这一领域语义形同虚设。
+  if (command !== CommandType.CREATE && expectedRowVersion === undefined) {
+    throw Errors.preconditionRequired();
+  }
 
   // ── ② Resource lookup + ③ Authorization（事务外预检，快速失败）──
   if (command !== CommandType.CREATE) {
@@ -73,7 +82,7 @@ export async function executeCommand<TResponse>(
     const pre = await prisma.requirement.findUnique({ where: { id: requirementId } });
     if (!pre) throw Errors.notFound();
     assertCanPerform(actorId, pre, pre.state as RequirementState, command as MutatingCommand);
-    if (expectedRowVersion !== undefined && pre.rowVersion !== expectedRowVersion) {
+    if (pre.rowVersion !== expectedRowVersion) {
       throw Errors.stale();
     }
   }
@@ -132,8 +141,14 @@ export async function executeCommand<TResponse>(
     if (command !== CommandType.CREATE) {
       current = await tx.requirement.findUnique({ where: { id: requirementId! } });
       if (!current) throw Errors.notFound();
-      assertCanPerform(actorId, current, current.state as RequirementState, command as MutatingCommand);
-      if (expectedRowVersion !== undefined && current.rowVersion !== expectedRowVersion) {
+      assertCanPerform(
+        actorId,
+        current,
+        current.state as RequirementState,
+        command as MutatingCommand,
+      );
+      // 版本号必填已在上方 ①′ 强制，此处直接比较
+      if (current.rowVersion !== expectedRowVersion) {
         throw Errors.stale();
       }
     }

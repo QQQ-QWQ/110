@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, HttpStatus, Post, Res, UseGuards } from '@nestjs/common';
 import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
 import { Response } from 'express';
 import { AuthGuard, CurrentUser } from '../../core/security/auth.guard';
@@ -25,7 +25,9 @@ export class LoginDto {
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 
+  // 登录不创建可寻址资源，显式声明 200（@Post 默认是 201）
   @Post('login')
+  @HttpCode(HttpStatus.OK)
   async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
     const result = await this.auth.login(dto.account, dto.password);
 
@@ -43,11 +45,9 @@ export class AuthController {
 
   /** 退出登录：服务端立即删除会话，旧 Cookie 立刻失效 */
   @Post('logout')
+  @HttpCode(HttpStatus.OK)
   @UseGuards(AuthGuard)
-  async logout(
-    @CurrentUser() user: ResolvedSession,
-    @Res({ passthrough: true }) res: Response,
-  ) {
+  async logout(@CurrentUser() user: ResolvedSession, @Res({ passthrough: true }) res: Response) {
     await this.auth.logout(user.sessionId);
     res.clearCookie(SESSION_COOKIE, { path: '/' });
     return { ok: true };

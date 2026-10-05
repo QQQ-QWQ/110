@@ -53,7 +53,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
 
   if (!res.ok) {
-    const err = (data as { error?: { code?: string; message?: string; details?: unknown } } | null)?.error;
+    const err = (data as { error?: { code?: string; message?: string; details?: unknown } } | null)
+      ?.error;
     throw new ApiError(
       res.status,
       err?.code ?? `HTTP_${res.status}`,
@@ -165,7 +166,20 @@ export const api = {
     ),
 };
 
-/** 412（并发冲突）与 409（状态冲突）需要提示用户刷新后重试 */
+/**
+ * 是否需要「刷新后重试」。
+ *
+ * 判据：当前页面**持有的数据是否已陈旧**。
+ *  - 412 PRECONDITION_FAILED —— 版本号过期（他人已更新）
+ *  - 409 STATE_CONFLICT      —— 状态已变化（如提交已被替换、需求已完成）
+ * 两者重新加载即可拿到正确状态。
+ *
+ * 其余错误刷新无用：401 需重新登录、403/404 是权限或可见性问题、
+ * 422 是本次输入本身不合法（刷新不会让它变合法）。
+ *
+ * 注：代码审查 R-03 发现此处注释原称含 409 而实现只判断 412，已按注释意图修正实现。
+ */
 export function isRefreshable(err: unknown): boolean {
-  return err instanceof ApiError && (err.status === 412 || err.code === 'PRECONDITION_FAILED');
+  if (!(err instanceof ApiError)) return false;
+  return err.status === 412 || err.status === 409;
 }

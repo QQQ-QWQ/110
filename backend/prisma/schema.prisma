@@ -62,12 +62,22 @@ model Requirement {
   proposer User @relation("Proposer", fields: [proposerId], references: [id])
   assignee User @relation("Assignee", fields: [assigneeId], references: [id])
 
+  /// 当前生效的提交 —— 唯一可被验收的提交。
+  /// 与 Submission.requirement 构成双向关系，故两者都需显式命名。
+  currentSubmission Submission? @relation(
+    "CurrentSubmission",
+    fields: [currentSubmissionId],
+    references: [id],
+    onDelete: SetNull
+  )
+
   criteria    Criterion[]
-  submissions Submission[]
+  submissions Submission[] @relation("RequirementSubmissions")
   events      Event[]
 
   @@index([proposerId, state])
   @@index([assigneeId, state])
+  @@index([currentSubmissionId])
   @@map("requirement")
 }
 
@@ -94,10 +104,13 @@ model Submission {
   submittedById String   @map("submitted_by")
   submittedAt   DateTime @default(now()) @map("submitted_at")
 
-  requirement Requirement          @relation(fields: [requirementId], references: [id], onDelete: Cascade)
-  submittedBy User                 @relation(fields: [submittedById], references: [id])
+  requirement Requirement   @relation("RequirementSubmissions", fields: [requirementId], references: [id], onDelete: Cascade)
+  submittedBy User          @relation(fields: [submittedById], references: [id])
   artifacts   SubmissionArtifact[]
   reviews     Review[]
+
+  /// 反向关系：本提交是否为某条需求的「当前提交」
+  currentOf Requirement[] @relation("CurrentSubmission")
 
   @@unique([requirementId, submissionNo])
   @@map("submission")

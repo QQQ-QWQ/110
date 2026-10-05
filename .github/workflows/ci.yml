@@ -118,11 +118,14 @@ jobs:
       - name: 构建
         run: npm run build
 
-      # 接线但暂未接入：脚本存在后自动生效
-      - name: Lint（若已接入）
+      # 以下三项已接入；仍保留 --if-present，便于在新模块中逐步启用
+      - name: 格式检查（Prettier）
+        run: npm run format:check --if-present
+
+      - name: 静态检查（ESLint）
         run: npm run lint --if-present
 
-      - name: 测试（若已接入）
+      - name: 单元测试
         run: npm run test --if-present
 
   # ─────────────────────────────────────────────
@@ -152,10 +155,13 @@ jobs:
       - name: 构建
         run: npm run build
 
-      - name: Lint（若已接入）
+      - name: 格式检查（Prettier）
+        run: npm run format:check --if-present
+
+      - name: 静态检查（ESLint）
         run: npm run lint --if-present
 
-      - name: 测试（若已接入）
+      - name: 单元测试
         run: npm run test --if-present
 
   # ─────────────────────────────────────────────

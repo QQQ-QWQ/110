@@ -103,7 +103,8 @@ export function nextActionsFor(
   const actions: CommandType[] = [];
   if (role === 'PROPOSER' && state === RequirementState.PENDING) actions.push(CommandType.EDIT);
   if (role === 'ASSIGNEE' && state === RequirementState.PENDING) actions.push(CommandType.START);
-  if (role === 'ASSIGNEE' && state === RequirementState.IN_PROGRESS) actions.push(CommandType.SUBMIT);
+  if (role === 'ASSIGNEE' && state === RequirementState.IN_PROGRESS)
+    actions.push(CommandType.SUBMIT);
   if (role === 'PROPOSER' && state === RequirementState.IN_REVIEW) {
     actions.push(CommandType.REVIEW_RETURN, CommandType.REVIEW_COMPLETE);
   }

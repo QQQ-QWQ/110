@@ -1,5 +1,5 @@
 import { Errors } from '../core/errors';
-import { CommandType, MutatingCommand, RequirementState, isTerminal, stateAllows } from './states';
+import { MutatingCommand, RequirementState, isTerminal, stateAllows } from './states';
 
 /**
  * 资源级授权（架构约束：POLICY 单点，禁止在 controller 内写角色判断）
@@ -56,7 +56,14 @@ export function assertCanPerform(
   const role = roleOf(userId, r);
 
   if (role === 'IRRELEVANT') throw Errors.notFound();
-  if (!ACTION_ROLES[command].includes(role)) throw Errors.forbidden();
+
+  // 未登记的命令一律拒绝。
+  // 若直接写 ACTION_ROLES[command].includes(...)，传入非法命令会因取到 undefined
+  // 而抛出 TypeError，最终以 500 暴露内部细节（代码审查 R-04）。
+  const allowedRoles = ACTION_ROLES[command];
+  if (!allowedRoles) throw Errors.forbidden();
+  if (!allowedRoles.includes(role)) throw Errors.forbidden();
+
   if (!stateAllows(state, command)) {
     if (isTerminal(state)) {
       throw Errors.stateConflict('需求已完成，不能继续提交或重复验收');

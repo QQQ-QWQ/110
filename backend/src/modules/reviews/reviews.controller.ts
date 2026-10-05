@@ -13,6 +13,8 @@ import {
   Body,
   Controller,
   Headers,
+  HttpCode,
+  HttpStatus,
   Param,
   Post,
   UseGuards,
@@ -52,6 +54,7 @@ export class ReviewsController {
   constructor(private readonly service: ReviewsService) {}
 
   @Post()
+  @HttpCode(HttpStatus.OK)
   async review(
     @CurrentUser() user: ResolvedSession,
     @Param('submissionId') submissionId: string,

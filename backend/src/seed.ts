@@ -88,7 +88,11 @@ async function seedRequirements(): Promise<void> {
 
   const pendingCriteria = [
     { id: C.pending1, seq: 1, text: '列表页提供「导出 CSV」按钮，点击后浏览器下载 .csv 文件' },
-    { id: C.pending2, seq: 2, text: '导出内容与当前筛选条件（状态 / 我提出 / 我负责 / 关键词）完全一致' },
+    {
+      id: C.pending2,
+      seq: 2,
+      text: '导出内容与当前筛选条件（状态 / 我提出 / 我负责 / 关键词）完全一致',
+    },
     { id: C.pending3, seq: 3, text: 'CSV 表头为中文，且用 Excel 打开无乱码（含 BOM）' },
   ];
   for (const c of pendingCriteria) {
@@ -130,7 +134,11 @@ async function seedRequirements(): Promise<void> {
 
   const progressCriteria = [
     { id: C.progress1, seq: 1, text: '列表页提供关键词输入框，输入后回车即可搜索' },
-    { id: C.progress2, seq: 2, text: '关键词与状态、我提出 / 我负责筛选可以叠加，且筛选条件同步到 URL' },
+    {
+      id: C.progress2,
+      seq: 2,
+      text: '关键词与状态、我提出 / 我负责筛选可以叠加，且筛选条件同步到 URL',
+    },
   ];
   for (const c of progressCriteria) {
     await prisma.criterion.upsert({
@@ -265,7 +273,7 @@ async function seedRequirements(): Promise<void> {
 async function main(): Promise<void> {
   await seedUsers();
   await seedRequirements();
-  // eslint-disable-next-line no-console
+  // 本文件是命令行脚本，控制台输出即其正常产出（见 eslint.config.mjs 中对该文件的覆盖）
   console.log(
     `[seed] 完成：3 个测试账号（alice / bob / carol，密码 ${DEMO_PASSWORD}）、3 条需求（待处理 / 进行中 / 待验收）`,
   );
@@ -273,7 +281,6 @@ async function main(): Promise<void> {
 
 main()
   .catch((error) => {
-    // eslint-disable-next-line no-console
     console.error('[seed] 失败：', error);
     process.exitCode = 1;
   })

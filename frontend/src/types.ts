@@ -3,12 +3,7 @@
 export type RequirementState = 'PENDING' | 'IN_PROGRESS' | 'IN_REVIEW' | 'COMPLETED';
 
 export type CommandType =
-  | 'CREATE'
-  | 'EDIT'
-  | 'START'
-  | 'SUBMIT'
-  | 'REVIEW_RETURN'
-  | 'REVIEW_COMPLETE';
+  'CREATE' | 'EDIT' | 'START' | 'SUBMIT' | 'REVIEW_RETURN' | 'REVIEW_COMPLETE';
 
 export type Role = 'PROPOSER' | 'ASSIGNEE' | 'IRRELEVANT';
 

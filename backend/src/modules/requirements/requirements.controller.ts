@@ -1,15 +1,11 @@
-import {
-  ArrayMinSize,
-  IsArray,
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-} from 'class-validator';
+import { ArrayMinSize, IsArray, IsNotEmpty, IsOptional, IsString } from 'class-validator';
 import {
   Body,
   Controller,
   Get,
   Headers,
+  HttpCode,
+  HttpStatus,
   Param,
   Patch,
   Post,
@@ -72,8 +68,7 @@ export class RequirementsController {
     if (state && !(ALL_STATES as readonly string[]).includes(state)) {
       throw Errors.validation('状态筛选值不合法');
     }
-    const normalizedScope =
-      scope === 'proposed' || scope === 'assigned' ? scope : ('all' as const);
+    const normalizedScope = scope === 'proposed' || scope === 'assigned' ? scope : ('all' as const);
     return this.service.list(user.userId, {
       state: state as RequirementState | undefined,
       scope: normalizedScope,
@@ -82,6 +77,7 @@ export class RequirementsController {
   }
 
   @Post()
+  @HttpCode(HttpStatus.CREATED)
   async create(
     @CurrentUser() user: ResolvedSession,
     @Body() dto: CreateRequirementDto,
@@ -103,6 +99,7 @@ export class RequirementsController {
   }
 
   @Patch(':id')
+  @HttpCode(HttpStatus.OK)
   async edit(
     @CurrentUser() user: ResolvedSession,
     @Param('id') id: string,
@@ -117,6 +114,7 @@ export class RequirementsController {
   }
 
   @Post(':id/start')
+  @HttpCode(HttpStatus.OK)
   async start(
     @CurrentUser() user: ResolvedSession,
     @Param('id') id: string,

@@ -131,10 +131,12 @@ docker compose up --build
 
 ### 两个关键请求头
 
-| 请求头 | 作用 | 缺失/不匹配时 |
+| 请求头 | 作用 | 缺失 / 不匹配时 |
 | --- | --- | --- |
-| `If-Match: <rowVersion>` | 乐观锁：提交时携带读取到的版本号 | 版本已变 → `412 PRECONDITION_FAILED`，前端提示刷新 |
+| `If-Match: <rowVersion>` | 乐观锁：写请求必须携带读取到的版本号 | **缺失** → `428 PRECONDITION_REQUIRED`；**版本已变** → `412 PRECONDITION_FAILED`，前端提示刷新 |
 | `Idempotency-Key: <uuid>` | 幂等：同一逻辑请求重复发送只生效一次 | 同键不同载荷 → `409`；同键同载荷 → 直接回放首次结果 |
+
+> `If-Match` 对非创建类写命令是**强制**的（代码审查 R-01）。若允许缺省，客户端只要不传该头就能跳过版本校验，使「状态已变化后旧页面操作必须失败」这一要求失效。
 
 ### 统一错误响应
 
@@ -152,12 +154,29 @@ docker compose up --build
 .
 ├── docker-compose.yml          # 一键启动：db + api + web
 ├── .env.example                # 可覆盖的环境变量样例
+├── .editorconfig               # 编辑器级统一（缩进/行尾/编码）
+├── .gitattributes              # 强制 LF，防止 CRLF 破坏容器脚本
+├── .prettierrc.json            # 格式化规则（前后端共用，单一落点）
+├── .prettierignore             # 不参与格式化的文件
+├── .github/
+│   ├── workflows/ci.yml        # CI 门禁：格式/静态检查/测试/构建/迁移校验/仓库卫生
+│   ├── PULL_REQUEST_TEMPLATE.md # PR 描述模板（改了什么/为什么/怎么验）
+│   └── CODEOWNERS              # 高危路径自动指派领域负责人
+│
 ├── backend/
 │   ├── Dockerfile              # 多阶段构建（node:22-bookworm-slim）
 │   ├── docker-entrypoint.sh    # 等库 → 迁移 → 种子 → 启动
+│   ├── eslint.config.mjs       # ESLint 扁平配置
 │   ├── prisma/
 │   │   ├── schema.prisma       # 10 个模型
-│   │   └── migrations/0001_init/migration.sql   # 手写 SQL，含 CHECK 约束
+│   │   └── migrations/
+│   │       ├── 0001_init/      # 建表 + 4 类 CHECK 约束（手写 SQL）
+│   │       └── 0002_current_submission_fk/   # 补外键（审查 R-02）
+│   ├── test/                   # 单元测试（node:test，直接跑编译产物，零测试依赖）
+│   │   ├── state-machine.test.js   # 状态机：合法/非法流转 + 终态不可逆
+│   │   ├── policy.test.js          # 权限：404/403/409 语义分离 + 判定优先级
+│   │   ├── invariants.test.js      # 不变量：长度计数/URL/退回原因/完成条件
+│   │   └── core-utils.test.js      # 幂等指纹 + 请求头解析
 │   └── src/
 │       ├── core/               # 错误、Prisma、canonical JSON、会话、鉴权守卫、异常过滤器
 │       ├── domain/             # 状态机、不变量、权限策略（领域规则单一落点）
@@ -165,20 +184,18 @@ docker compose up --build
 │       ├── modules/            # auth / requirements / submissions / reviews
 │       ├── seed.ts             # 幂等种子数据
 │       └── main.ts
+│
 ├── frontend/
 │   ├── Dockerfile              # 多阶段构建 → Nginx 静态托管
 │   ├── nginx.conf              # SPA 回退 + /api 反向代理
+│   ├── eslint.config.js        # ESLint 扁平配置（含 vue 插件）
 │   └── src/
 │       ├── api.ts              # 统一客户端（自动附加 If-Match / Idempotency-Key）
+│       ├── api.test.ts         # 15 个测试：错误映射 / 刷新判定 / 写请求契约
 │       ├── router.ts           # 路由与登录态守卫
 │       ├── views/              # 登录 / 列表 / 详情（含验收面板）
 │       └── types.ts
-├── .editorconfig               # 编辑器级统一（缩进/行尾/编码）
-├── .gitattributes              # 强制 LF，防止 CRLF 破坏容器脚本
-├── .github/
-│   ├── workflows/ci.yml        # CI 门禁：构建/类型检查/迁移校验/仓库卫生
-│   ├── PULL_REQUEST_TEMPLATE.md # PR 描述模板（改了什么/为什么/怎么验）
-│   └── CODEOWNERS              # 高危路径自动指派领域负责人
+│
 └── docs/
     ├── 架构设计与关键取舍.md      # 为什么这样设计
     ├── 测试与验证记录.md          # 实测过程与证据
@@ -242,12 +259,38 @@ npm run dev                      # http://localhost:5173，/api 自动代理到 
 | --- | --- | --- | --- |
 | L1 编辑器 | 保存时 | 统一缩进/行尾/编码 | `.editorconfig` |
 | L2 版本控制 | 克隆/提交时 | 强制 LF，防止容器脚本被 CRLF 破坏 | `.gitattributes` |
-| L3 CI | 开 PR 时 | 后端构建 + Prisma 校验 + 前端类型检查/构建 + 迁移可回放 + 仓库卫生（行尾/密钥/构建产物） | `.github/workflows/ci.yml` |
+| L3 CI | 开 PR 时 | 格式检查 + 静态检查 + 单元测试 + 后端构建/Prisma 校验 + 前端类型检查/构建 + 迁移可回放 + 仓库卫生（行尾/密钥/构建产物） | `.github/workflows/ci.yml` |
 | L4 人工 | PR 审查 | 正确性、安全、并发、可读性、测试覆盖（风格已由 L1~L3 覆盖，不占用人工带宽） | `.github/PULL_REQUEST_TEMPLATE.md`、`.github/CODEOWNERS` |
 
-**设计要点**：CI 中的 lint / test 用 `npm run lint --if-present` 接线 —— 脚本尚未接入时自动跳过，一旦在 `package.json` 中加上即**自动生效**，无需改 CI。这样门禁从第一天就是绿的、可信的。
+**自动化质量门禁现状**
 
-**已知质量缺口（诚实披露）**：仓库当前**没有单元测试，也没有接入 ESLint/Prettier**（标准 §3.G、§6.5 已列为 P0 待办）。正确性目前依赖 `docs/测试与验证记录.md` 中的手工端到端验证。这是本项目最需要补齐的一环。
+| 检查 | 后端 | 前端 | 命令 |
+| --- | --- | --- | --- |
+| 格式（Prettier） | ✅ | ✅ | `npm run format:check` |
+| 静态检查（ESLint） | ✅ 0 error 0 warning | ✅ 0 error 0 warning | `npm run lint` |
+| 类型检查 / 构建 | ✅ `nest build` | ✅ `vue-tsc` + `vite build` | `npm run build` |
+| 单元测试 | ✅ **47 个** | ✅ **15 个** | `npm test` |
+
+```bash
+# 完整验证（任一步失败即视为不合格）
+cd backend  && npm run format:check && npm run lint && npm test
+cd frontend && npm run format:check && npm run lint && npm run typecheck && npm test
+```
+
+**设计要点**：CI 中的 lint / test / format 均用 `npm run xxx --if-present` 接线 —— 脚本不存在时自动跳过，一旦在 `package.json` 中加上即**自动生效**，无需改 CI。这样门禁从第一天就是绿的、可信的。
+
+**测试覆盖**（对应标准 §3.G 的四类强制场景）
+
+| 类别 | 用例数 | 覆盖要点 |
+| --- | --- | --- |
+| 权限 | 10 | 无关账号 404、越权 403、状态不符 409、未登录 401；判定优先级 404 → 403 → 409 |
+| 并发与幂等 | 8 | 指纹对键顺序不敏感、对内容敏感；`If-Match` 解析 |
+| 业务不变量 | 17 | 退回必填原因、未全通过不得完成、emoji 按 code points 计数、URL 两层判定一致 |
+| 状态机 | 12 | 全部合法流转 + 全部非法流转被拒 + 终态不可逆 |
+
+> 后端测试直接跑编译产物 `dist/`，使用 Node 内置 `node:test`，**不引入任何测试运行时依赖**。
+
+**已知质量缺口（诚实披露）**：尚未接入本地 `pre-commit` 钩子与依赖漏洞扫描（`npm audit` / Dependabot），见标准 §6.5。端到端（跨容器、真实数据库）验证仍需按 `docs/测试与验证记录.md` 手工执行——单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互。
 
 ---
 

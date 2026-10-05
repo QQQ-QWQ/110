@@ -50,9 +50,7 @@ async function submit(): Promise<void> {
     <div class="card">
       <div class="card-body">
         <h1 style="font-size: 20px; margin-bottom: 6px">需求与验收协作台</h1>
-        <p class="muted small mb-2">
-          小团队需求流转与验收留痕平台。请使用团队账号登录。
-        </p>
+        <p class="muted small mb-2">小团队需求流转与验收留痕平台。请使用团队账号登录。</p>
 
         <div v-if="error" class="alert alert-error">{{ error }}</div>
 
@@ -81,7 +79,12 @@ async function submit(): Promise<void> {
             />
           </div>
 
-          <button class="btn btn-primary" type="submit" :disabled="loading" style="width: 100%; height: 38px">
+          <button
+            class="btn btn-primary"
+            type="submit"
+            :disabled="loading"
+            style="width: 100%; height: 38px"
+          >
             <span v-if="loading" class="spinner" />
             <span>{{ loading ? '登录中…' : '登录' }}</span>
           </button>

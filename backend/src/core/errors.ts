@@ -36,8 +36,16 @@ export const Errors = {
     new AppError('IDEMPOTENCY_KEY_REUSED', msg, 409),
 
   /** 乐观锁：客户端持有的版本号已过期 */
-  stale: (msg = '数据已被他人更新，请刷新后重试') =>
-    new AppError('PRECONDITION_FAILED', msg, 412),
+  stale: (msg = '数据已被他人更新，请刷新后重试') => new AppError('PRECONDITION_FAILED', msg, 412),
+
+  /**
+   * 缺少前置条件：非创建类写命令必须携带 `If-Match: <rowVersion>`。
+   *
+   * 为什么不许缺省：若允许缺省，客户端只要不传该头就能跳过版本校验，
+   * 使「状态已变化后旧页面操作必须失败」这一领域语义失效（详见代码审查 R-01）。
+   */
+  preconditionRequired: (msg = '缺少 If-Match 版本号，无法校验数据是否已被更新') =>
+    new AppError('PRECONDITION_REQUIRED', msg, 428),
 
   /** 业务规则不满足（必填缺失、条件未全通过等） */
   validation: (msg: string, details?: unknown) =>

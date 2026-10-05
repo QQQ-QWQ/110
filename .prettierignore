@@ -1,0 +1,14 @@
+# Prettier 不处理的文件
+# 说明：格式化交给工具，但生成物、锁文件与文档不参与，避免无意义 diff
+
+node_modules/
+dist/
+coverage/
+package-lock.json
+
+# 文档由人工维护，Prettier 重排会造成大量噪声 diff
+docs/
+*.md
+
+# CI 与仓库元数据
+.github/

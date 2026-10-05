@@ -40,13 +40,25 @@ export function assertCodePointLength(value: string, max: number, label: string)
 
 /**
  * 成果链接校验。
+ *
  * 应用层使用真正的 URL parser（scheme ∈ {http, https} 且 host 非空）；
  * 数据库 CHECK 只作兜底，不能替代这里的校验。
+ *
+ * ⚠️ 两层必须**判定一致**（代码审查 R-07）：
+ * 数据库约束为 `^https?://[^[:space:]]+$`，即不允许任何空白字符；
+ * 而 `new URL('https://example.com/a b')` 是**成功**的（空格会被百分号编码，
+ * 但本函数返回的是原始字符串）。若此处不拦，含空格的链接会一路走到数据库，
+ * 触发 CHECK 冲突，最终以 500 暴露内部错误，而不是干净的 422。
  */
 export function assertHttpUrl(raw: string): string {
   const url = (raw ?? '').trim();
   assertNonBlank(url, '成果链接');
   assertCodePointLength(url, LIMITS.URL_MAX, '成果链接');
+
+  // 与数据库 CHECK 对齐：禁止任何空白字符（空格 / 制表符 / 换行等）
+  if (/\s/.test(url)) {
+    throw Errors.validation('成果链接不能包含空格等空白字符');
+  }
 
   let parsed: URL;
   try {

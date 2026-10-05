@@ -487,7 +487,7 @@ if npx prisma migrate deploy; then ...
 | C2 | **迁移漂移检测** | 在 `migrations` job（已有 postgres service）用 `prisma migrate diff --from-migrations ./prisma/migrations --to-schema-datamodel ./prisma/schema.prisma --shadow-database-url <复用 service 的第二个库> --exit-code`。 | 这是**最能防止「schema 与迁移悄悄不一致」**的检查，恰好针对本架构「手写 SQL + schema 双真相」的结构性风险。代价：需要 shadow 库，且 `migrate diff` 对 `--from-migrations` 会重放全部迁移，增加 CI 时间（估 +30~60s）。 |
 | C3 | ✅ **已落地** | `scripts/check-migrations-immutable.mjs` + `migrations` job 的一个步骤。判定规则刻意选最简的一条：`M`（修改）/`D`（删除）→ 违规；`A`（新增）→ 放行（新增正是迁移的工作方式）。用 `--no-renames` 把重命名拆成 A+D，于是重命名被 D 拦住。 | 需要与基准提交比对，因此该 job 的 checkout 加了 `fetch-depth: 0`。基准取法：PR 用 `base.sha`，push 用 `event.before`。**首次推送的 `before` 是全零 SHA** → 脚本**显式打印原因并跳过**（跳过 ≠ 通过，绝不静默放行）。代价：浅克隆改全量克隆，checkout 略慢。 |
 | C4 | ✅ **已落地** | `scripts/preflight.mjs`：一键复跑 CI 的机械检查。**并且 CI 的 `hygiene` job 直接调用它**（`--mechanical`），于是「本地 preflight 绿」与「CI hygiene 绿」是同一件事，不存在两套会漂移的检查。**「记得跑」也已解决**：`scripts/install-git-hooks.mjs` 安装 pre-push 钩子，推送前自动执行。 | 把反馈周期从 3~5 分钟压到 **1 秒**。代价有两处，都已记录：① 这些检查在 CI 里合并成了一个步骤，粒度不如从前 —— 但这正是该脚本的意义（拿不到日志时本地跑一遍就能定位）；② 钩子可被 `--no-verify` 绕过（设计使然，不是缺陷 —— 钩子只是第一道防线，真正的门禁仍在 CI）。选 pre-push 而非 pre-commit：preflight 要跑 Prettier 与 Prisma，放在 pre-commit 会让人想关掉它。 |
-| C5 | ✅ **已落地（文档项）** | `docs/代码审查标准与流程.md` §6.3.1 明确 `main` 的 **6 个 required status checks**（与 `ci.yml` 的 6 个 job 一一对应）、以及「Require branches to be up to date」「禁止绕过」「禁止 force push」等配套约束。 | 仓库内的文档**无法**强制 GitHub 侧配置，这一点在文中如实标注了（「验收时需当场核对，不能『文档写了就算做了』」）。之所以仍要做：把「已配置分支保护」写成验收项，能确保它不被遗忘。另外文档里写清了「为什么恰好是这 6 个」—— required checks 多写一个不存在的名字会让 PR 永久卡住。 |
+| C5 | ✅ **已落地并实测**（2026-10-06） | `docs/代码审查标准与流程.md` §6.3.1 明确 `main` 的 **6 个 required status checks**（与 `ci.yml` 的 6 个 job 一一对应）、以及「Require branches to be up to date」「禁止绕过」「禁止 force push」等配套约束。 | **已通过 GitHub API 真正写入配置**，并用一次直推实测确认生效（GitHub 返回 `GH006 ... Changes must be made through a pull request` + `6 of 6 required status checks are expected`）。**批准数配为 0**：本仓库只有 1 个协作者，配成 1 会让所有 PR 永久无法合并 —— PR 仍是强制的（这才是挡住直推的关键）。文档里写清了「为什么恰好是这 6 个」—— required checks 多写一个不存在的名字会让 PR 永久卡住。 |
 | **C6** | ✅ **已落地**（**本轮新增，优先级最高**） | 新增 `e2e` job：postgres service → `prisma generate` + `migrate deploy` → `npm run build` → `node dist/seed.js` → 种子完整性断言 → `node dist/main.js` 等就绪 → `node scripts/e2e.mjs`（DEM-00~08 + DEM-11~16，93 项断言）。 | **这是唯一能拦住「跨层缺陷」的检查。** 见下方说明 —— 它的必要性已由本轮实跑直接证明。 |
 
 **为什么 C6 的优先级最高（有实证）**
@@ -596,7 +596,7 @@ if npx prisma migrate deploy; then ...
 |---|---|
 | **S6 liveness / readiness 拆分** | ✅ **已完成** —— 有停库实测（见 §7.5） |
 | **C3 已应用迁移不可修改** | ✅ **已完成** —— `scripts/check-migrations-immutable.mjs`；本地双向验证（改迁移 → 报违规；新增迁移目录 → 放行） |
-| **C5 分支保护声明** | ✅ **已完成（文档项）** —— §6.3.1 明确 6 个 required checks；⚠️ 无法从仓库证明 GitHub 侧已配置 |
+| **C5 分支保护** | ✅ **已完成并实测** —— 6 个 required checks + PR 强制 + 禁止 force push/删除 + 管理员同受约束；直推 main 被 GitHub 拒绝（`GH006`），见 §7.11 |
 | **S7 登录限流** | ✅ **已完成** —— 键 = 账号 + IP；5 次 / 10 分钟 → 封禁 5 分钟；429 + `Retry-After`；单测 15 条 + e2e DEM-16 共 6 项，见 §7.7 |
 | E5 会话缓存 | ⏳ **不建议做** —— 与「登出即时失效」直接冲突（见 §5.1 该行） |
 
@@ -655,7 +655,8 @@ if npx prisma migrate deploy; then ...
 | S4 entrypoint 分流 | `node scripts/verify-entrypoint.mjs` → **17 项断言全通过**：连接类重试到上限 / 迁移类**立即失败不重试** / 一次成功 / 先失败后成功。已接入 CI 的 backend job |
 | P3 依赖漏洞扫描 | `node scripts/check-audit.mjs` → 后端 3 high（同一公告，影响链 `deepmerge-ts → @prisma/config → prisma`）**已豁免**；前端 2 moderate（低于阻断线）。双向负例已验证：删掉豁免 → 报「未豁免」退出 1；加一条假豁免 → 报「白名单已过期」退出 1 |
 | C3 已应用迁移检测（双向） | 本地用临时分支实测：**改** `0001_init/migration.sql` → 退出码 1 并打印原因；**新增** `0003_probe/` 目录 → 退出码 0 且列为「新增（允许）」。三种跳过情形在本地显式打印原因并退出 0；**在 CI 下「拿不到基准」改为退出 2**（门禁等于没接必须修），唯一合法跳过是全零 SHA。✅ run #19 该步骤 success —— 由于 CI 下跳过即失败，**绿色本身即证明它真的跑过** |
-| C5 分支保护清单 | `docs/代码审查标准与流程.md` §6.3.1 —— 6 个 required checks 与 `ci.yml` 的 6 个 job 一一对应 |
+| C5 分支保护清单 | §6.3.1 的 6 个 check 名与 `ci.yml` 的 job `name` **逐字比对一致**，也与最近一次 CI 实际上报的 job 名一致（名字写错会让 PR 永久卡住） |
+| C5 分支保护生效 | 直推 `main` → `remote: error: GH006: Protected branch update failed ... Changes must be made through a pull request ... 6 of 6 required status checks are expected` |
 | S7 限流单测 | `backend/test/login-throttle.test.js` 15 条：阈值、**到期后计数清零**（否则永久锁死）、**封禁期间失败不延长封禁**、成功清零、窗口过期、**同账号不同 IP 互不影响**（锁不能当武器）、**键数量有上限**、配置非法即抛错、**封禁期间连数据库都不查** |
 | S7 端到端 | e2e DEM-16 共 6 项：连续错误密码最终 429、429 之前一律 401、**一旦 429 不再回到 401**、**封禁期间换密码也 429**、429 带 `Retry-After`、**探测账号被封不影响其它账号** |
 | S7 手工确认响应 | `HTTP/1.1 429 Too Many Requests` + `Retry-After: 298` + `{"error":{"code":"TOO_MANY_REQUESTS","message":"登录失败次数过多，请 298 秒后再试"}}` |
@@ -1154,6 +1155,62 @@ peer @nestjs/common@"^10.0.0 || ^11.0.0" from @nestjs/config@4.0.4
 
 这件事本身就是「门禁有价值」的最好证据：**它拦住了一个真实的、会让构建失败的依赖变更**，
 而且暴露出了配置层面的缺陷，而不是等到合入之后才发现。
+
+---
+
+### 7.11 C5 分支保护：从「文档项」变成「已配置并实测」（2026-10-06）
+
+C5 一直是本报告里唯一的**文档项** —— §6.3.1 把 6 个 required checks 写得清清楚楚，
+但如实标注了「仓库内的文档无法证明 GitHub 侧已配置」。§7.9 里还留下了反证：
+**有一个 CI 全红的 PR 依然被合并了**。
+
+这次把它真正配上并验证了。
+
+#### 配置内容
+
+| 项 | 值 |
+| --- | --- |
+| Required status checks | **6 个**（与 `ci.yml` 的 job `name` 逐字一致） |
+| Require branches to be up to date | ✅ 开 |
+| Require a pull request before merging | ✅ 开（**批准数 = 0**，理由见下） |
+| Do not allow bypassing | ✅ 开（`enforce_admins`） |
+| Allow force pushes / deletions | ❌ 关 |
+
+#### 两个判断
+
+**① 6 个 check 名必须逐字正确。** §6.3.1 自己警告过：多写一个不存在的名字，
+GitHub 会永远等待一个不会出现的检查，PR 永久卡住。所以没有照抄文档，而是
+**从 ci.yml 与最近一次真实 CI 运行两处分别取出名字做比对**，确认完全一致后才写入。
+
+**② 批准数从 1 改成 0。** 文档原写「至少 1 个 approve」，但实测发现
+**本仓库只有 1 个协作者** —— 作者无法批准自己的 PR，配成 1 会让**所有 PR 永久无法合并**。
+改成 0 之后：**PR 仍是强制的**（这才是挡住直推的关键），只是不要求他人批准。
+**有了第二个协作者后应改回 1** —— 这个偏离在 §6.3.1 里写明了。
+
+#### 验证方式：不是「界面上打了勾」，而是一次真实的直推
+
+配置写完只是「API 返回 200」。真正的验证是**试着违反它**：
+
+```
+$ git push --no-verify origin main
+remote: error: GH006: Protected branch update failed for refs/heads/main.
+remote: - Changes must be made through a pull request.
+remote: - 6 of 6 required status checks are expected.
+ ! [remote rejected] main -> main (protected branch hook declined)
+```
+
+两条约束都被 GitHub 拒绝。**这才是「配置生效」的证据** ——
+与 §7.10 的「停库实测」「真并发压测」是同一个取向：能实测的绝不靠推断。
+
+（用于验证的临时提交随后已 `git reset --hard` 丢弃，本地与远端都停在 `0590563`。）
+
+#### 一个直接的副作用
+
+**从此任何人都不能直推 `main`，包括管理员** —— 我自己后续的改动也必须走 PR。
+这正是分支保护的意图，但它改变的是**日常开发流程**，不只是多了一道门禁。
+
+> **复核方式**：`gh api repos/QQQ-QWQ/110/branches/main/protection`，
+> 或打开 `Settings → Branches → Branch protection rules` 逐条核对 §6.3.1 的表。
 
 ---
 

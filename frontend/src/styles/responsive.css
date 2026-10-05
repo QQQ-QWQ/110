@@ -151,6 +151,22 @@
     border-radius: 0;
   }
 
+  /* 动效 #4 移动端弹窗：底部抽屉，translateY 100% → 0（方案 §8.3，320ms / 进入）。
+     覆盖桌面端的「淡入 + 轻微缩放」——全屏抽屉若还淡入，反而丢失了
+     「它从屏幕底部升上来」这个空间线索（方案 §8.1 第 2 条）。 */
+  .modal-enter-from .modal,
+  .modal-leave-to .modal {
+    opacity: 1;
+    transform: translateY(100%);
+  }
+  .modal-enter-from .modal {
+    transition-duration: var(--dur-3);
+  }
+  .modal-leave-to .modal {
+    transition-duration: var(--dur-2);
+    transition-timing-function: var(--ease-out);
+  }
+
   .modal-head {
     padding: var(--sp-4);
   }

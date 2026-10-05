@@ -167,7 +167,8 @@
     background var(--dur-1),
     border-color var(--dur-1),
     color var(--dur-1),
-    opacity var(--dur-1);
+    opacity var(--dur-1),
+    /* 动效 #7 按压需要 transform 过渡（方案 §8.3） */ transform var(--dur-1) var(--ease-standard);
   white-space: nowrap;
 }
 
@@ -176,8 +177,9 @@
   border-color: var(--c-border-strong);
 }
 
+/* #7 按钮按压：scale 1 → .98（方案 §8.3；表里写 80ms，归到最近的 --dur-1） */
 .btn:active:not(:disabled) {
-  transform: translateY(0.5px);
+  transform: scale(0.98);
 }
 
 .btn:disabled {
@@ -355,6 +357,22 @@
 .badge.COMPLETED {
   background: var(--c-done-soft);
   color: var(--c-done);
+}
+
+/* 动效 #8 状态徽标：圆点 scale 1→1.4→1，**只在状态真变化时**播一次（方案 §8.3）。
+   触发方式见 StatusBadge.vue —— 它只对「变化」置位，首次挂载不播，
+   否则一屏十几个徽标同时跳，违反方案 §8.1「同一时刻最多一处动效」。 */
+@keyframes badge-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.4);
+  }
+}
+.badge.is-pulsing::before {
+  animation: badge-pulse var(--dur-2) var(--ease-standard);
 }
 
 .tag {
@@ -777,6 +795,10 @@
   justify-content: center;
   padding: var(--sp-12) var(--sp-4);
   overflow-y: auto;
+  /* 动效 #1 遮罩淡入淡出（方案 §8.3）。时长只用令牌 ——
+     方案 §8.3 表里写的是 150ms，但 §8.2 只定义 120/200/320 三档，
+     这里归到最近的 --dur-1，避免在组件里写裸 ms。 */
+  transition: opacity var(--dur-1) var(--ease-standard);
 }
 
 .modal {
@@ -790,6 +812,30 @@
   display: flex;
   flex-direction: column;
   max-height: calc(100dvh - var(--sp-12) * 2);
+  /* 动效 #2/#3 面板：进入用「进入曲线」、退出用「退出曲线」 */
+  transition:
+    opacity var(--dur-2) var(--ease-in),
+    transform var(--dur-2) var(--ease-in);
+}
+
+/* ───────── 弹窗动效（配合 BaseModal 的 <Transition name="modal">）─────────
+   Vue 的 Transition 类加在**遮罩**上（它是过渡根），面板是它的子元素，
+   因此用 `.modal-enter-from .modal` 这种后代选择器命中面板。 */
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0; /* #1 遮罩 */
+}
+/* #2 打开：opacity 0→1 + scale .98→1 + translateY 4→0（200ms / 进入） */
+.modal-enter-from .modal {
+  opacity: 0;
+  transform: scale(0.98) translateY(4px);
+}
+/* #3 关闭：反向，scale 1→.99，且更快（退出应当比进入干脆） */
+.modal-leave-to .modal {
+  opacity: 0;
+  transform: scale(0.99);
+  transition-duration: var(--dur-1);
+  transition-timing-function: var(--ease-out);
 }
 
 .modal-head {
@@ -980,7 +1026,8 @@
   border: 1px solid var(--c-border);
   box-shadow: var(--sh-2);
   font-size: 13px;
-  animation: toast-in var(--dur-2) ease;
+  /* 动效 #5（方案 §8.3）：时长与曲线都走令牌，不写裸值 */
+  animation: toast-in var(--dur-2) var(--ease-in);
 }
 
 .toast.is-error {
@@ -1020,14 +1067,17 @@
   padding: 0 2px;
 }
 
+/* 动效 #5 Toast 入队：translateX 8→0 + opacity（方案 §8.3）。
+   方向取 X 而不是 Y —— Toast 从右侧滑入，位移方向与它「从哪来」一致，
+   符合方案 §8.1 的「优先空间连续性」。 */
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateY(-6px);
+    transform: translateX(8px);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: translateX(0);
   }
 }
 

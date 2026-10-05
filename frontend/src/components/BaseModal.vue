@@ -43,31 +43,38 @@ useFocusTrap(rootRef, open, close);
 
 <template>
   <Teleport to="body">
-    <div v-if="modelValue" class="overlay" @click.self="close">
-      <div
-        ref="rootRef"
-        class="modal"
-        role="dialog"
-        aria-modal="true"
-        :aria-label="title"
-        :style="{ maxWidth: `${maxWidth}px` }"
-        tabindex="-1"
-      >
-        <div class="modal-head">
-          <h3>{{ title }}</h3>
-          <button v-if="closable" class="icon-btn" type="button" aria-label="关闭" @click="close">
-            ×
-          </button>
-        </div>
+    <!-- 动效 #1/#2/#3（方案 §8.3）：遮罩淡入淡出 + 面板 scale/translate。
+         用 <Transition> 而不是纯 CSS 动画，是因为**关闭**动画必须在元素被移除**之前**
+         播完 —— 只靠 CSS 做不到这一点（元素会立刻消失）。
+         过渡类名加在遮罩上（它是过渡根），面板样式由 `.modal-enter-from .modal`
+         这类后代选择器命中，见 components.css。 -->
+    <Transition name="modal">
+      <div v-if="modelValue" class="overlay" @click.self="close">
+        <div
+          ref="rootRef"
+          class="modal"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="title"
+          :style="{ maxWidth: `${maxWidth}px` }"
+          tabindex="-1"
+        >
+          <div class="modal-head">
+            <h3>{{ title }}</h3>
+            <button v-if="closable" class="icon-btn" type="button" aria-label="关闭" @click="close">
+              ×
+            </button>
+          </div>
 
-        <div class="modal-body">
-          <slot />
-        </div>
+          <div class="modal-body">
+            <slot />
+          </div>
 
-        <div v-if="$slots.footer" class="modal-foot">
-          <slot name="footer" />
+          <div v-if="$slots.footer" class="modal-foot">
+            <slot name="footer" />
+          </div>
         </div>
       </div>
-    </div>
+    </Transition>
   </Teleport>
 </template>

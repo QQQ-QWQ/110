@@ -185,6 +185,9 @@ docker compose up --build
 │       ├── seed.ts             # 幂等种子数据
 │       └── main.ts
 │
+├── scripts/
+│   └── e2e.mjs                 # 端到端验证脚本（DEM-01~08，一条命令产出对照表）
+│
 ├── frontend/
 │   ├── Dockerfile              # 多阶段构建 → Nginx 静态托管
 │   ├── nginx.conf              # SPA 回退 + /api 反向代理
@@ -247,6 +250,16 @@ npm run dev                      # http://localhost:5173，/api 自动代理到 
 
 完整的手工验证过程、命令与预期结果见 **[`docs/测试与验证记录.md`](docs/测试与验证记录.md)**，覆盖正常流程、并发冲突、幂等重放、越权与持久化五类场景。
 
+**一键端到端验证（推荐）**
+
+```bash
+docker compose up --build -d          # 启动三服务
+node scripts/e2e.mjs                  # 跑 DEM-01 ~ DEM-08，输出「期望 / 实际」对照表
+node scripts/e2e.mjs                  # 全部通过时退出码 0，可直接用于 CI
+```
+
+脚本不依赖任何第三方包（用 Node 22 内置 `fetch`），幂等键带每次运行唯一的前缀，因此**可反复执行**而不会命中上一轮的幂等记录。除断言外还会输出「观察项」，把**文档预期与代码实际行为不一致**的地方直接暴露出来，而不是默默通过。
+
 ---
 
 ## 十、代码质量与协作机制
@@ -290,7 +303,7 @@ cd frontend && npm run format:check && npm run lint && npm run typecheck && npm 
 
 > 后端测试直接跑编译产物 `dist/`，使用 Node 内置 `node:test`，**不引入任何测试运行时依赖**。
 
-**已知质量缺口（诚实披露）**：尚未接入本地 `pre-commit` 钩子与依赖漏洞扫描（`npm audit` / Dependabot），见标准 §6.5。端到端（跨容器、真实数据库）验证仍需按 `docs/测试与验证记录.md` 手工执行——单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互。
+**已知质量缺口（诚实披露）**：尚未接入本地 `pre-commit` 钩子与依赖漏洞扫描（`npm audit` / Dependabot），见标准 §6.5。单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互；跨容器的端到端行为由 `scripts/e2e.mjs` 覆盖（DEM-01~08），DEM-09（故障可重试）与 DEM-10（数据持久化）仍为手工步骤。
 
 ---
 

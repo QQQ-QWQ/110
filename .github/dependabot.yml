@@ -37,10 +37,27 @@ updates:
       # `npm ci` 直接 ERESOLVE 失败（已在本地复现）。CI 判得对，是分组配置有缺陷。
       nestjs:
         patterns: ['@nestjs/*']
+      # lint 工具链必须**整套一起升** —— 与前端是同一个教训，而这次是在后端真实发生的：
+      # 前端加了分组之后，后端**漏了**，于是 2026-10-06 又开出两个各自独立的 PR
+      # （`@eslint/js` 9→10 与 `eslint-config-prettier` 9→10）。
+      # 它们这次恰好都绿（因为后端 eslint 已先升到 10），但下一次未必这么巧。
+      lint-toolchain:
+        patterns:
+          - eslint
+          - '@eslint/js'
+          - typescript-eslint
+          - eslint-config-prettier
+          - globals
       # minor / patch 合成一个 PR（major 会被排除，单独开）
       minor-and-patch:
         patterns: ['*']
-        exclude-patterns: ['@nestjs/*']
+        exclude-patterns:
+          - '@nestjs/*'
+          - eslint
+          - '@eslint/js'
+          - typescript-eslint
+          - eslint-config-prettier
+          - globals
         update-types: ['minor', 'patch']
     ignore:
       # Prisma 大版本会改动迁移语义与生成的 Client，必须人工评估后手动升。

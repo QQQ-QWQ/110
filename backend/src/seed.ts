@@ -175,6 +175,19 @@ async function seedRequirements(): Promise<void> {
   });
 
   // ── 需求 3：待验收（已提交 V1）──
+  //
+  // ⚠️ 循环外键，必须分三步写：
+  //   requirement.current_submission_id → submission.id
+  //   submission.requirement_id         → requirement.id
+  //   两者互为外键，任何单条语句都无法同时满足。
+  //
+  //   ① 先建需求（currentSubmissionId 留空）
+  //   ② 再建提交与链接（此时需求已存在）
+  //   ③ 最后回填需求的当前提交指针
+  //
+  // 若把 currentSubmissionId 直接写在下面的 create 里（初版即如此），
+  // 迁移 0002 加上的外键会以 P2003 直接拒绝写入，导致 seed 退出码为 1，
+  // 进而被 docker-entrypoint.sh 的 `set -e` 放大为「容器起不来」。
   await prisma.requirement.upsert({
     where: { id: R.inReview },
     update: {},
@@ -187,7 +200,6 @@ async function seedRequirements(): Promise<void> {
       proposerId: U.alice,
       assigneeId: U.bob,
       rowVersion: 3,
-      currentSubmissionId: S.reviewV1,
     },
   });
 
@@ -224,6 +236,13 @@ async function seedRequirements(): Promise<void> {
       seq: 1,
       url: 'https://github.com/QQQ-QWQ/110',
     },
+  });
+
+  // ③ 回填当前提交指针（提交此时已存在，外键可满足）。
+  // 幂等：重复执行只是把同一指针再写一次，不会覆盖已有业务进展。
+  await prisma.requirement.update({
+    where: { id: R.inReview },
+    data: { currentSubmissionId: S.reviewV1 },
   });
 
   await prisma.event.upsert({

@@ -97,13 +97,24 @@ export class RequirementsController {
   }
 
   @Get(':id')
-  async detail(@CurrentUser() user: ResolvedSession, @Param('id') id: string) {
-    return this.service.detail(user.userId, id);
+  async detail(
+    @CurrentUser() user: ResolvedSession,
+    @Param('id') id: string,
+    // 只对事件时间线开放：submissions 用固定上界（见 pagination.ts 的说明），
+    // 因为它的数量由「重提次数」决定，不像事件那样随活动线性增长。
+    @Query('eventsLimit') eventsLimit?: string,
+  ) {
+    return this.service.detail(user.userId, id, { eventsLimit });
   }
 
   @Get(':id/history')
-  async history(@CurrentUser() user: ResolvedSession, @Param('id') id: string) {
-    return this.service.history(user.userId, id);
+  async history(
+    @CurrentUser() user: ResolvedSession,
+    @Param('id') id: string,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+  ) {
+    return this.service.history(user.userId, id, { limit, cursor });
   }
 
   @Patch(':id')

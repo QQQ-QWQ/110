@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 端到端验证脚本 —— DEM-01 ~ DEM-08 + DEM-11（列表游标分页）+ DEM-12（请求编号）
+ * 端到端验证脚本 —— DEM-01 ~ DEM-08 + DEM-11（列表游标分页）+ DEM-12（请求编号）+ DEM-13（详情/历史分页）
  *
  * 把《docs/测试与验证记录.md》§3 的手工 curl 步骤收敛成**一条可重复执行的命令**，
  * 输出「期望状态码 / 实际状态码」对照表，全部通过时退出码为 0。
@@ -540,6 +540,111 @@ async function main() {
     false,
     'requestId' in (rid404.json?.error ?? {}),
   );
+
+  // ══════════════════ DEM-13 详情 / 历史分页（E2）══════════════════
+  // 详情响应必须有上界：事件时间线每次状态变更都追加一条，是唯一会随
+  // 「需求活得久」而无限增长的数组。完整时间线改由 /history 按 seq 游标续取。
+  const det0 = await call('GET', `/requirements/${rid}`, { cookie: alice });
+  check(
+    'DEM-13',
+    '详情返回上界标记与真实总数',
+    true,
+    typeof det0.json?.eventsTotal === 'number' &&
+      typeof det0.json?.eventsHasMore === 'boolean' &&
+      typeof det0.json?.eventsLimit === 'number' &&
+      typeof det0.json?.submissionsTotal === 'number' &&
+      typeof det0.json?.submissionsHasMore === 'boolean',
+  );
+
+  const detTotal = det0.json?.eventsTotal ?? 0;
+  const detSeqs = (det0.json?.events ?? []).map((e) => e.seq);
+  check(
+    'DEM-13',
+    '详情事件数不超过 eventsLimit',
+    true,
+    detSeqs.length <= (det0.json?.eventsLimit ?? 0),
+  );
+  check(
+    'DEM-13',
+    'eventsHasMore 与「总数 > 返回数」一致',
+    detTotal > detSeqs.length,
+    det0.json?.eventsHasMore,
+  );
+  check(
+    'DEM-13',
+    '事件按 seq 升序返回（时间线按发生顺序阅读）',
+    true,
+    detSeqs.every((s, i) => i === 0 || s > detSeqs[i - 1]),
+  );
+
+  const det1 = await call('GET', `/requirements/${rid}?eventsLimit=1`, { cookie: alice });
+  check('DEM-13', 'eventsLimit=1 → 只返回 1 条', 1, (det1.json?.events ?? []).length);
+  check('DEM-13', 'eventsLimit=1 → eventsHasMore 为 true', true, det1.json?.eventsHasMore);
+  check('DEM-13', '★ 截断后仍给出真实总数（不是返回数）', detTotal, det1.json?.eventsTotal);
+
+  // 详情窗口应是**最近** N 条，即全量时间线的尾部
+  const histAll = await call('GET', `/requirements/${rid}/history?limit=200`, { cookie: alice });
+  const allSeqs = (histAll.json?.events ?? []).map((e) => e.seq);
+  check(
+    'DEM-13',
+    '★ 详情窗口是全量时间线的尾部',
+    allSeqs[allSeqs.length - 1],
+    detSeqs[detSeqs.length - 1],
+  );
+
+  // 历史端点：seq 游标分页
+  const h1 = await call('GET', `/requirements/${rid}/history?limit=2`, { cookie: alice });
+  const h1Seqs = (h1.json?.events ?? []).map((e) => e.seq);
+  check('DEM-13', '历史 limit=2 → 200 且恰好 2 条', 2, h1Seqs.length);
+  check(
+    'DEM-13',
+    '还有更多时 hasMore=true 且给出 nextCursor',
+    true,
+    h1.json?.pageInfo?.hasMore === true && typeof h1.json?.pageInfo?.nextCursor === 'string',
+  );
+
+  const h2 = await call(
+    'GET',
+    `/requirements/${rid}/history?limit=2&cursor=${encodeURIComponent(h1.json?.pageInfo?.nextCursor ?? '')}`,
+    { cookie: alice },
+  );
+  const h2Seqs = (h2.json?.events ?? []).map((e) => e.seq);
+  check('DEM-13', '带游标取第二页 → 200', 200, h2.status);
+  check('DEM-13', '★ 第二页与第一页无重复 seq', 0, h2Seqs.filter((s) => h1Seqs.includes(s)).length);
+  check(
+    'DEM-13',
+    '★ 第二页严格排在首页之后',
+    true,
+    h2Seqs.length > 0 && Math.min(...h2Seqs) > Math.max(...h1Seqs),
+  );
+
+  // 逐页取完：不重复、不遗漏、总数与详情报的 eventsTotal 一致
+  const collected = [];
+  let histCursor = null;
+  let guard = 0;
+  for (;;) {
+    const q = histCursor ? `?limit=2&cursor=${encodeURIComponent(histCursor)}` : '?limit=2';
+    const r = await call('GET', `/requirements/${rid}/history${q}`, { cookie: alice });
+    collected.push(...(r.json?.events ?? []).map((e) => e.seq));
+    guard += 1;
+    if (!r.json?.pageInfo?.hasMore || guard > 50) break;
+    histCursor = r.json.pageInfo.nextCursor;
+  }
+  check('DEM-13', '★ 逐页取完的事件数 = 详情报的 eventsTotal', detTotal, collected.length);
+  check('DEM-13', '★ 逐页取完无重复 seq', collected.length, new Set(collected).size);
+
+  const badHistCursor = await call('GET', `/requirements/${rid}/history?cursor=not-a-cursor`, {
+    cookie: alice,
+  });
+  check('DEM-13', '历史非法游标 → 422（不是 500）', 422, badHistCursor.status);
+  check(
+    'DEM-13',
+    '历史 limit=0 → 422',
+    422,
+    (await call('GET', `/requirements/${rid}/history?limit=0`, { cookie: alice })).status,
+  );
+  const hHuge = await call('GET', `/requirements/${rid}/history?limit=99999`, { cookie: alice });
+  check('DEM-13', '历史 limit 超上限 → 收敛到 200（而非报错）', 200, hHuge.json?.pageInfo?.limit);
 
   // ══════════════════ 输出报告 ══════════════════
 

@@ -19,6 +19,11 @@ const {
 const { AllExceptionsFilter } = require('../dist/core/exception.filter.js');
 const { Errors, AppError } = require('../dist/core/errors.js');
 
+// 异常过滤器会按设计往日志里写 error（那正是 S5 要的行为）。测试断言的是
+// 响应体，不是日志输出 —— 关掉 Nest 的日志，避免十几行噪音淹没测试结果。
+// node:test 每个测试文件跑在独立进程里，因此不会影响其他文件。
+require('@nestjs/common').Logger.overrideLogger(false);
+
 // ─────────────────────────────────────────────────────────────
 // A. 纯逻辑
 // ─────────────────────────────────────────────────────────────

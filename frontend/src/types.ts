@@ -92,12 +92,33 @@ export interface RequirementDetail {
   criteria: Criterion[];
   currentSubmissionId: string | null;
   currentSubmission: Submission | null;
+  /**
+   * 只包含**最近若干次**提交与**最近若干条**事件 —— 服务端给这两个数组设了上界，
+   * 详情响应因此有界（报告 §5.1 E2）。完整时间线走 `/history` 端点。
+   * `*Total` / `*HasMore` 让界面能如实说明「这是最近 N 条，共 M 条」，
+   * 而不是把截断藏起来。
+   */
   submissions: Submission[];
+  submissionsTotal: number;
+  submissionsHasMore: boolean;
   events: DomainEvent[];
+  eventsTotal: number;
+  eventsHasMore: boolean;
+  eventsLimit: number;
   myRole: Role;
   nextActions: CommandType[];
   createdAt: string;
   updatedAt: string;
+}
+
+/** 历史端点（`GET /requirements/:id/history`）：完整时间线，按 seq 游标分页 */
+export interface RequirementHistory {
+  requirementId: string;
+  state: RequirementState;
+  submissions: Submission[];
+  submissionsHasMore: boolean;
+  events: DomainEvent[];
+  pageInfo: PageInfo;
 }
 
 /** 提交成果的表单载荷（前端 → API） */

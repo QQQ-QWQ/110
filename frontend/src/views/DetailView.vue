@@ -328,11 +328,17 @@ async function doReview(payload: ReviewPayload): Promise<void> {
       <!-- 提交与验收记录 -->
       <section class="card">
         <div class="card-head">
-          <h3>提交与验收记录（{{ detail.submissions.length }} 次提交）</h3>
+          <h3>提交与验收记录（{{ detail.submissionsTotal }} 次提交）</h3>
           <span class="faint small">每次提交独立保留，旧记录不被覆盖</span>
         </div>
         <div class="card-body">
-          <div v-if="detail.submissions.length === 0" class="faint small">负责人尚未提交成果。</div>
+          <div v-if="detail.submissionsTotal === 0" class="faint small">负责人尚未提交成果。</div>
+
+          <!-- 服务端只返回最近若干次提交（响应有界）；确实被截断时如实说明，
+               而不是把截断藏起来让人以为「就这么多」 -->
+          <p v-if="detail.submissionsHasMore" class="faint small">
+            仅显示最近 {{ detail.submissions.length }} 次提交，完整记录请通过历史接口查看。
+          </p>
 
           <SubmissionCard
             v-for="submission in detail.submissions"
@@ -347,10 +353,14 @@ async function doReview(payload: ReviewPayload): Promise<void> {
       <!-- 操作留痕 -->
       <section class="card">
         <div class="card-head">
-          <h3>操作留痕（{{ detail.events.length }} 条事件）</h3>
+          <h3>操作留痕（{{ detail.eventsTotal }} 条事件）</h3>
           <span class="faint small">追加式记录，不可篡改</span>
         </div>
         <div class="card-body">
+          <p v-if="detail.eventsHasMore" class="faint small">
+            仅显示最近 {{ detail.events.length }} 条（共 {{ detail.eventsTotal }} 条），
+            更早的记录请通过历史接口查看。
+          </p>
           <EventTimeline :events="detail.events" />
         </div>
       </section>

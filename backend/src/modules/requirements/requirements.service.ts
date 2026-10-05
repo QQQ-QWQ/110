@@ -10,7 +10,16 @@ import {
   assertNonBlank,
 } from '../../domain/invariants';
 import { assertCanRead, roleOf } from '../../domain/policy';
-import { buildPageInfo, decodeCursor, normalizeLimit } from '../../domain/pagination';
+import {
+  DETAIL_SUBMISSION_LIMIT,
+  DEFAULT_SEQ_PAGE_SIZE,
+  MAX_SEQ_PAGE_SIZE,
+  buildPageInfo,
+  buildSeqPageInfo,
+  decodeCursor,
+  decodeSeqCursor,
+  normalizeLimit,
+} from '../../domain/pagination';
 import {
   CommandType,
   EVENT_TYPE,
@@ -32,6 +41,33 @@ export interface ListPage {
   limit?: string;
   cursor?: string;
 }
+
+/** 详情页的分页参数：只对事件时间线开放（submissions 用固定上界，见 pagination.ts） */
+export interface DetailPage {
+  eventsLimit?: string;
+}
+
+/** 历史端点的分页参数：按事件的 `seq` 游标续取 */
+export interface HistoryPage {
+  limit?: string;
+  cursor?: string;
+}
+
+/**
+ * 提交的完整关联。详情与历史共用同一份定义 —— 两处各写一份迟早会漂移，
+ * 而漂移的表现是「某个端点少返回一个字段」，前端只在特定页面才炸。
+ */
+const SUBMISSION_INCLUDE = {
+  submittedBy: { select: { id: true, name: true, account: true } },
+  artifacts: { orderBy: { seq: 'asc' } },
+  reviews: {
+    orderBy: { reviewedAt: 'asc' },
+    include: {
+      reviewer: { select: { id: true, name: true, account: true } },
+      checks: true,
+    },
+  },
+} satisfies Prisma.SubmissionInclude;
 
 @Injectable()
 export class RequirementsService {
@@ -128,34 +164,44 @@ export class RequirementsService {
     };
   }
 
-  /** 详情：含验收条件、当前提交、历次提交与反馈、完整事件时间线、下一步操作 */
-  async detail(userId: string, id: string) {
-    const row = await this.prisma.requirement.findUnique({
-      where: { id },
-      include: {
-        proposer: { select: { id: true, name: true, account: true } },
-        assignee: { select: { id: true, name: true, account: true } },
-        criteria: { orderBy: { seq: 'asc' } },
-        submissions: {
-          orderBy: { submissionNo: 'asc' },
-          include: {
-            submittedBy: { select: { id: true, name: true, account: true } },
-            artifacts: { orderBy: { seq: 'asc' } },
-            reviews: {
-              orderBy: { reviewedAt: 'asc' },
-              include: {
-                reviewer: { select: { id: true, name: true, account: true } },
-                checks: true,
-              },
-            },
+  /**
+   * 详情：含验收条件、当前提交、历次提交与反馈、**最近若干条**事件时间线、下一步操作。
+   *
+   * 为什么要给这两个数组加上界（报告 §5.1 E2）：
+   *  · `events` 每次状态变更都会追加一条，是**真正会无界增长**的那个；
+   *  · `submissions` 的数量等于重提次数，由人的行为决定，实际上界很低 ——
+   *    但仍给一个固定上界，因为「不设上界的数组」迟早会变成事故。
+   * 两者都**倒序取 N+1 再翻回升序**：多取的那条只用来判断「还有更早的」，
+   * 不返回给客户端（与列表分页的 `take: limit + 1` 是同一手法）。
+   *
+   * 完整时间线请走 `/history`（支持 `seq` 游标续取）。
+   */
+  async detail(userId: string, id: string, page: DetailPage = {}) {
+    const eventsLimit = normalizeLimit(page.eventsLimit, DEFAULT_SEQ_PAGE_SIZE, MAX_SEQ_PAGE_SIZE);
+
+    // 两个 count 与主查询并发发出：详情是首屏路径，不该串行等三次往返
+    const [row, eventsTotal, submissionsTotal] = await Promise.all([
+      this.prisma.requirement.findUnique({
+        where: { id },
+        include: {
+          proposer: { select: { id: true, name: true, account: true } },
+          assignee: { select: { id: true, name: true, account: true } },
+          criteria: { orderBy: { seq: 'asc' } },
+          submissions: {
+            orderBy: { submissionNo: 'desc' },
+            take: DETAIL_SUBMISSION_LIMIT + 1,
+            include: SUBMISSION_INCLUDE,
+          },
+          events: {
+            orderBy: { seq: 'desc' },
+            take: eventsLimit + 1,
+            include: { actor: { select: { id: true, name: true, account: true } } },
           },
         },
-        events: {
-          orderBy: { seq: 'asc' },
-          include: { actor: { select: { id: true, name: true, account: true } } },
-        },
-      },
-    });
+      }),
+      this.prisma.event.count({ where: { requirementId: id } }),
+      this.prisma.submission.count({ where: { requirementId: id } }),
+    ]);
 
     if (!row) throw Errors.notFound();
 
@@ -163,7 +209,25 @@ export class RequirementsService {
     const role = assertCanRead(userId, row);
     const state = row.state as RequirementState;
 
-    const currentSubmission = row.submissions.find((s) => s.id === row.currentSubmissionId) ?? null;
+    // 倒序取回的窗口翻回升序：时间线必须按发生顺序阅读
+    const submissionsHasMore = row.submissions.length > DETAIL_SUBMISSION_LIMIT;
+    const submissions = (
+      submissionsHasMore ? row.submissions.slice(0, DETAIL_SUBMISSION_LIMIT) : row.submissions
+    ).reverse();
+
+    const eventsHasMore = row.events.length > eventsLimit;
+    const events = (eventsHasMore ? row.events.slice(0, eventsLimit) : row.events).reverse();
+
+    // `currentSubmissionId` 只会指向最新一次提交，因此必然落在上面那个窗口内。
+    // 万一不变量被破坏，这里补一次查询 —— 让行为退化成「正确」，而不是静默
+    // 返回 null 让前端整块内容消失。
+    let currentSubmission = submissions.find((s) => s.id === row.currentSubmissionId) ?? null;
+    if (!currentSubmission && row.currentSubmissionId) {
+      currentSubmission = await this.prisma.submission.findUnique({
+        where: { id: row.currentSubmissionId },
+        include: SUBMISSION_INCLUDE,
+      });
+    }
 
     return {
       id: row.id,
@@ -177,14 +241,19 @@ export class RequirementsService {
       criteria: row.criteria.map((c) => ({ id: c.id, seq: c.seq, text: c.text })),
       currentSubmissionId: row.currentSubmissionId,
       currentSubmission: currentSubmission ? this.mapSubmission(currentSubmission) : null,
-      submissions: row.submissions.map((s) => this.mapSubmission(s)),
-      events: row.events.map((e) => ({
+      submissions: submissions.map((s) => this.mapSubmission(s)),
+      submissionsTotal,
+      submissionsHasMore,
+      events: events.map((e) => ({
         seq: e.seq,
         eventType: e.eventType,
         actor: e.actor,
         payload: e.payloadJson,
         createdAt: e.createdAt,
       })),
+      eventsTotal,
+      eventsHasMore,
+      eventsLimit,
       myRole: role,
       nextActions: nextActionsFor(state, role),
       createdAt: row.createdAt,
@@ -192,14 +261,65 @@ export class RequirementsService {
     };
   }
 
-  /** 历史（单独端点，语义更清晰） */
-  async history(userId: string, id: string) {
-    const detail = await this.detail(userId, id);
+  /**
+   * 历史（单独端点）：**完整**时间线，按 `seq` 游标分页。
+   *
+   * 与详情页的分工：详情页只给「最近 N 条」用于首屏，历史端点负责完整回溯 ——
+   * 这样详情响应有上界，而完整数据仍然拿得到。
+   *
+   * 游标用 `seq`（需求内单调递增）而不是 `(createdAt, id)`：单调整数天然有序，
+   * 不存在「同一毫秒」的稳定性问题，比较条件也只有一个字段。
+   * 顺序为**升序 + 前向游标**：时间线按发生顺序阅读，`nextCursor` 指向本页最后
+   * 一条的 seq，下一页取 `seq > cursor`。
+   */
+  async history(userId: string, id: string, page: HistoryPage = {}) {
+    const limit = normalizeLimit(page.limit, DEFAULT_SEQ_PAGE_SIZE, MAX_SEQ_PAGE_SIZE);
+    const after =
+      page.cursor === undefined || page.cursor === '' ? null : decodeSeqCursor(String(page.cursor));
+
+    const row = await this.prisma.requirement.findUnique({
+      where: { id },
+      include: {
+        submissions: {
+          orderBy: { submissionNo: 'desc' },
+          take: DETAIL_SUBMISSION_LIMIT + 1,
+          include: SUBMISSION_INCLUDE,
+        },
+        events: {
+          where: after === null ? undefined : { seq: { gt: after } },
+          orderBy: { seq: 'asc' },
+          take: limit + 1,
+          include: { actor: { select: { id: true, name: true, account: true } } },
+        },
+      },
+    });
+
+    if (!row) throw Errors.notFound();
+
+    // 可见性判定与详情完全一致：无关账号 → 404（不是 403）
+    assertCanRead(userId, row);
+
+    const eventsHasMore = row.events.length > limit;
+    const events = eventsHasMore ? row.events.slice(0, limit) : row.events;
+
+    const submissionsHasMore = row.submissions.length > DETAIL_SUBMISSION_LIMIT;
+    const submissions = (
+      submissionsHasMore ? row.submissions.slice(0, DETAIL_SUBMISSION_LIMIT) : row.submissions
+    ).reverse();
+
     return {
-      requirementId: detail.id,
-      state: detail.state,
-      submissions: detail.submissions,
-      events: detail.events,
+      requirementId: row.id,
+      state: row.state,
+      submissions: submissions.map((s) => this.mapSubmission(s)),
+      submissionsHasMore,
+      events: events.map((e) => ({
+        seq: e.seq,
+        eventType: e.eventType,
+        actor: e.actor,
+        payload: e.payloadJson,
+        createdAt: e.createdAt,
+      })),
+      pageInfo: buildSeqPageInfo(limit, eventsHasMore, events[events.length - 1]?.seq),
     };
   }
 

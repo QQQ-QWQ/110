@@ -12,10 +12,15 @@ const assert = require('node:assert/strict');
 const {
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
+  DEFAULT_SEQ_PAGE_SIZE,
+  MAX_SEQ_PAGE_SIZE,
   normalizeLimit,
   encodeCursor,
   decodeCursor,
   buildPageInfo,
+  encodeSeqCursor,
+  decodeSeqCursor,
+  buildSeqPageInfo,
 } = require('../dist/domain/pagination.js');
 const { AppError } = require('../dist/core/errors.js');
 
@@ -223,4 +228,125 @@ test('★ 决胜键方向若写反，模拟翻页会立刻暴露（反向验证�
 test('空结果集：首页即为末页，nextCursor 为 null', () => {
   const info = buildPageInfo(20, false, undefined);
   assert.deepEqual(info, { limit: 20, hasMore: false, nextCursor: null });
+});
+
+// ─────────────────────────────────────────────────────────────
+// 事件时间线的 `seq` 游标（报告 §5.1 E2）
+//
+// `seq` 在单个需求内单调递增，因此是比 `(createdAt, id)` 更合适的游标：
+// 单调整数天然有序，不存在「同一毫秒」的稳定性问题。
+// 但仍然做 base64url 编码（对客户端不透明），理由与列表游标一致。
+// ─────────────────────────────────────────────────────────────
+
+test('seq 游标可往返，且对客户端不透明（不是明文 JSON）', () => {
+  for (const seq of [0, 1, 7, 12345, Number.MAX_SAFE_INTEGER]) {
+    const encoded = encodeSeqCursor(seq);
+    assert.equal(decodeSeqCursor(encoded), seq);
+    assert.equal(encoded.includes('{'), false, '不应是明文 JSON');
+    assert.equal(/^\d+$/.test(encoded), false, '不应是明文数字');
+  }
+});
+
+test('seq 游标：畸形输入一律 422（而非 500）—— 游标属于请求参数', () => {
+  const malformed = [
+    'not-base64!!',
+    Buffer.from('not json', 'utf8').toString('base64url'),
+    Buffer.from('null', 'utf8').toString('base64url'),
+    Buffer.from('[]', 'utf8').toString('base64url'),
+    Buffer.from('"7"', 'utf8').toString('base64url'),
+    Buffer.from('{}', 'utf8').toString('base64url'),
+    Buffer.from('{"s":"7"}', 'utf8').toString('base64url'), // 字符串而非数字
+    Buffer.from('{"s":-1}', 'utf8').toString('base64url'), // 负数
+    Buffer.from('{"s":1.5}', 'utf8').toString('base64url'), // 小数
+    Buffer.from('{"s":null}', 'utf8').toString('base64url'),
+    Buffer.from('{"x":7}', 'utf8').toString('base64url'), // 字段名不对
+  ];
+  for (const raw of malformed) {
+    assert.equal(
+      statusOf(() => decodeSeqCursor(raw)),
+      422,
+      `应 422：${raw}`,
+    );
+  }
+});
+
+test('★ seq 游标与列表游标不通用（两种游标不能混用）', () => {
+  // 两类游标编码的是不同结构。混用必须报 422，而不是静默把 createdAt
+  // 当成 seq 用 —— 那会让分页悄悄错位。
+  const listCursor = encodeCursor(
+    new Date('2026-01-01T00:00:00.000Z'),
+    'a'.repeat(8) + '-0000-4000-8000-000000000000',
+  );
+  assert.equal(
+    statusOf(() => decodeSeqCursor(listCursor)),
+    422,
+  );
+
+  const seqCursor = encodeSeqCursor(7);
+  assert.equal(
+    statusOf(() => decodeCursor(seqCursor)),
+    422,
+  );
+});
+
+test('buildSeqPageInfo：有下一页时游标指向本页最后一条的 seq', () => {
+  assert.deepEqual(buildSeqPageInfo(50, true, 137), {
+    limit: 50,
+    hasMore: true,
+    nextCursor: encodeSeqCursor(137),
+  });
+});
+
+test('buildSeqPageInfo：没有下一页时 nextCursor 为 null（客户端无需自己判断边界）', () => {
+  assert.deepEqual(buildSeqPageInfo(50, false, 137), {
+    limit: 50,
+    hasMore: false,
+    nextCursor: null,
+  });
+  // 空页且 hasMore=false 时 lastSeq 为 undefined，同样不应炸
+  assert.deepEqual(buildSeqPageInfo(50, false, undefined), {
+    limit: 50,
+    hasMore: false,
+    nextCursor: null,
+  });
+});
+
+test('★ 模拟时间线翻页：seq 升序逐页取完，不重复、不遗漏、顺序正确', () => {
+  const all = Array.from({ length: 23 }, (_, i) => i + 1); // seq 1..23
+  const limit = 5;
+
+  const seen = [];
+  let cursor = null;
+  let pages = 0;
+  for (;;) {
+    const page =
+      cursor === null ? all.slice(0, limit) : all.filter((s) => s > cursor).slice(0, limit);
+    const hasMore = all.filter((s) => (cursor === null ? true : s > cursor)).length > limit;
+    seen.push(...page);
+    pages += 1;
+    if (!hasMore) break;
+    cursor = page[page.length - 1];
+    assert.ok(pages < 20, '不应无限翻页');
+  }
+
+  assert.deepEqual(seen, all, '逐页取完应与全量一致（不重复、不遗漏、顺序正确）');
+  assert.equal(pages, 5, '23 条 / 每页 5 条 → 5 页（末页 3 条）');
+});
+
+test('normalizeLimit 可覆盖默认值与上限（时间线页比需求列表大）', () => {
+  // 默认：需求列表 20 / 上限 100
+  assert.equal(normalizeLimit(undefined), DEFAULT_PAGE_SIZE);
+  assert.equal(normalizeLimit(99999), MAX_PAGE_SIZE);
+  // 覆盖：时间线 50 / 上限 200
+  assert.equal(normalizeLimit(undefined, DEFAULT_SEQ_PAGE_SIZE, MAX_SEQ_PAGE_SIZE), 50);
+  assert.equal(normalizeLimit(99999, DEFAULT_SEQ_PAGE_SIZE, MAX_SEQ_PAGE_SIZE), 200);
+  // 校验语义与列表完全一致：非法值仍然 422，而不是被 fallback 悄悄兜住
+  assert.equal(
+    statusOf(() => normalizeLimit('0', DEFAULT_SEQ_PAGE_SIZE, MAX_SEQ_PAGE_SIZE)),
+    422,
+  );
+  assert.equal(
+    statusOf(() => normalizeLimit('abc', DEFAULT_SEQ_PAGE_SIZE, MAX_SEQ_PAGE_SIZE)),
+    422,
+  );
 });

@@ -14,7 +14,7 @@
 | **当前状态** | **已修复并验证**：commit `603cedc` 推送后 CI 由「4 次全红」转绿，此后 run #6 ~ #16 **连续全绿**。最新 run #16（`a31fa25`）为 **6 个 job、65 个步骤全部 success**（唯一 skipped 的是 `if: failure()` 的日志步骤，按设计跳过）。 |
 | **可扩展性** | 读路径曾有 **2 处会随数据量线性恶化**的无界查询（列表无分页、详情含无界事件流）—— **两处均已修复**（E1 键集分页 / E2 详情与历史分页）；横向扩展曾有 **2 个硬阻塞**（`container_name` 阻断 `--scale`、nginx 不在运行时重解析 DNS）—— 已解除（E3，其中 nginx 部分仅结构校验）。写路径（乐观锁 + 幂等）本身是可横向扩展的。 |
 | **稳定性** | 核心写路径的事务/幂等/乐观锁设计是**扎实的**；主要缺口在**运维面**：幂等记录与会话过期行无清理（无界增长）、连接池与语句超时未显式配置、无 request-id 关联日志、`web` 未等服务健康即启动、liveness 与 readiness 混为一谈。**前三项已修复**（S1 / S2 / S5），后两项也已落地（S3 / S6，见 §6，其中 S3 仅结构校验）。 |
-| **最高优先级动作** | **P0 共 6 项已全部落地**（见 §6）：CI 起服务跑 e2e、列表游标分页、数据保留清理、连接池与超时、解除横向扩展阻塞、迁移漂移检测。5 项有自动化验证（单测 / 真实数据库 / e2e / CI）；**唯一例外是 E3 的 nginx 改动**，只做了结构解析校验（本环境无 Docker 引擎与 nginx 二进制）。**P1 已全部落地**：C4 本地前置检查（§7.1）、S5 请求编号贯穿日志（§7.2）、E2 详情/历史分页（§7.3）、E4 登录并发闸门（§7.4）、S3 `web` 等服务健康（仅结构校验）。**P2 已启动**：S6 liveness/readiness 拆分（§7.5，有停库实测）。 |
+| **最高优先级动作** | **P0 共 6 项已全部落地**（见 §6）：CI 起服务跑 e2e、列表游标分页、数据保留清理、连接池与超时、解除横向扩展阻塞、迁移漂移检测。5 项有自动化验证（单测 / 真实数据库 / e2e / CI）；**唯一例外是 E3 的 nginx 改动**，只做了结构解析校验（本环境无 Docker 引擎与 nginx 二进制）。**P1 已全部落地**：C4 本地前置检查（§7.1）、S5 请求编号贯穿日志（§7.2）、E2 详情/历史分页（§7.3）、E4 登录并发闸门（§7.4）、S3 `web` 等服务健康（仅结构校验）。**P2 已完成三项**：S6 liveness/readiness 拆分（§7.5，有停库实测）、C3 已应用迁移不可修改（§7.6，本地双向验证）、C5 分支保护声明（§6.3.1，文档项）。剩余：S7 登录限流；E5 会话缓存**不建议做**（与「登出即时失效」冲突）。 |
 
 ---
 
@@ -485,9 +485,9 @@ if npx prisma migrate deploy; then ...
 |---|---|---|---|
 | C1 | ✅ **已完成** | schema 格式门禁、`validate` 前置、`DATABASE_URL` 注入、CHECK 约束清单扩展至 15 条、job 超时。 | — |
 | C2 | **迁移漂移检测** | 在 `migrations` job（已有 postgres service）用 `prisma migrate diff --from-migrations ./prisma/migrations --to-schema-datamodel ./prisma/schema.prisma --shadow-database-url <复用 service 的第二个库> --exit-code`。 | 这是**最能防止「schema 与迁移悄悄不一致」**的检查，恰好针对本架构「手写 SQL + schema 双真相」的结构性风险。代价：需要 shadow 库，且 `migrate diff` 对 `--from-migrations` 会重放全部迁移，增加 CI 时间（估 +30~60s）。 |
-| C3 | **已应用迁移不可修改** | 检测 `prisma/migrations/` 下**已存在目录**内文件被修改 → 告警（新增目录放行）。 | 需要在 CI 中对比 base 分支，实现略复杂（`git diff --name-only ${{ github.event.pull_request.base.sha }}...HEAD -- prisma/migrations`）。纯 push 触发时无 base，需降级为「跳过并提示」。 |
+| C3 | ✅ **已落地** | `scripts/check-migrations-immutable.mjs` + `migrations` job 的一个步骤。判定规则刻意选最简的一条：`M`（修改）/`D`（删除）→ 违规；`A`（新增）→ 放行（新增正是迁移的工作方式）。用 `--no-renames` 把重命名拆成 A+D，于是重命名被 D 拦住。 | 需要与基准提交比对，因此该 job 的 checkout 加了 `fetch-depth: 0`。基准取法：PR 用 `base.sha`，push 用 `event.before`。**首次推送的 `before` 是全零 SHA** → 脚本**显式打印原因并跳过**（跳过 ≠ 通过，绝不静默放行）。代价：浅克隆改全量克隆，checkout 略慢。 |
 | C4 | ✅ **已落地** | `scripts/preflight.mjs`：一键复跑 CI 的机械检查。**并且 CI 的 `hygiene` job 直接调用它**（`--mechanical`），于是「本地 preflight 绿」与「CI hygiene 绿」是同一件事，不存在两套会漂移的检查。 | 把反馈周期从 3~5 分钟压到 **1 秒**。代价有两处，都已记录：① 这些检查在 CI 里合并成了一个步骤，粒度不如从前 —— 但这正是该脚本的意义（拿不到日志时本地跑一遍就能定位）；② 需要开发者记得跑，用 `pre-push` 钩子可强制，但钩子可被 `--no-verify` 绕过（设计使然，不是缺陷）。 |
-| C5 | **分支保护声明** | 在 `docs/代码审查标准与流程.md` 明确 main 的 required status checks，作为交付验收项。 | 仓库内的文档无法强制 GitHub 侧配置；但**把「已配置分支保护」写成验收项**能确保它不被遗忘。 |
+| C5 | ✅ **已落地（文档项）** | `docs/代码审查标准与流程.md` §6.3.1 明确 `main` 的 **6 个 required status checks**（与 `ci.yml` 的 6 个 job 一一对应）、以及「Require branches to be up to date」「禁止绕过」「禁止 force push」等配套约束。 | 仓库内的文档**无法**强制 GitHub 侧配置，这一点在文中如实标注了（「验收时需当场核对，不能『文档写了就算做了』」）。之所以仍要做：把「已配置分支保护」写成验收项，能确保它不被遗忘。另外文档里写清了「为什么恰好是这 6 个」—— required checks 多写一个不存在的名字会让 PR 永久卡住。 |
 | **C6** | ✅ **已落地**（**本轮新增，优先级最高**） | 新增 `e2e` job：postgres service → `prisma generate` + `migrate deploy` → `npm run build` → `node dist/seed.js` → 种子完整性断言 → `node dist/main.js` 等就绪 → `node scripts/e2e.mjs`（DEM-00~08 + DEM-11~15，87 项断言）。 | **这是唯一能拦住「跨层缺陷」的检查。** 见下方说明 —— 它的必要性已由本轮实跑直接证明。 |
 
 **为什么 C6 的优先级最高（有实证）**
@@ -592,7 +592,13 @@ if npx prisma migrate deploy; then ...
 
 ### P2 —— 可延后（当前规模收益有限）
 
-E5 会话缓存（**需先解决与「登出即时失效」的冲突**）、S7 登录限流（可与 E4 合并）、C3 迁移不可改检测、C5 分支保护。
+| 项 | 状态 |
+|---|---|
+| **S6 liveness / readiness 拆分** | ✅ **已完成** —— 有停库实测（见 §7.5） |
+| **C3 已应用迁移不可修改** | ✅ **已完成** —— `scripts/check-migrations-immutable.mjs`；本地双向验证（改迁移 → 报违规；新增迁移目录 → 放行） |
+| **C5 分支保护声明** | ✅ **已完成（文档项）** —— §6.3.1 明确 6 个 required checks；⚠️ 无法从仓库证明 GitHub 侧已配置 |
+| S7 登录限流 | ⏳ 待做（可与 E4 合并实现） |
+| E5 会话缓存 | ⏳ **不建议做** —— 与「登出即时失效」直接冲突（见 §5.1 该行） |
 
 ### 明确**不**建议做的事
 
@@ -640,6 +646,8 @@ E5 会话缓存（**需先解决与「登出即时失效」的冲突**）、S7 �
 | S6 探针拆分（停库实测） | ✅ 停掉数据库后：`/health/live` → **200**，`/health/ready` → **503** `{"database":"unreachable"}`，`/health`（别名）→ **503**；恢复数据库并重启应用后 → 200 |
 | S6 单测 | `backend/test/health.test.js` 4 条：**liveness 绝不查数据库**、readiness 可用 → 200、不可用 → 503 且不泄露细节、`/health` 与 readiness 同语义 |
 | S3 compose 结构校验 | `docker-compose config` → 退出码 0，`web.depends_on.api.condition: service_healthy`；`container_name` 计数 0。⚠️ 未起容器验证 |
+| C3 已应用迁移检测（双向） | 本地用临时分支实测：**改** `0001_init/migration.sql` → 退出码 1 并打印原因；**新增** `0003_probe/` 目录 → 退出码 0 且列为「新增（允许）」。三种跳过情形（无基准 / 全零 SHA / 不可达基准）均显式打印原因并退出 0 |
+| C5 分支保护清单 | `docs/代码审查标准与流程.md` §6.3.1 —— 6 个 required checks 与 `ci.yml` 的 6 个 job 一一对应 |
 | CHECK 约束清单 | `grep -oE '"[a-z_]+_chk"' backend/prisma/migrations/0001_init/migration.sql \| sort -u` → 15 条 |
 | 幂等记录无清理（**审核时**，现已修复） | `grep -rn "idempotencyRecord" backend/src \| grep -iE "delete\|clean\|purge"` → 当时为空 |
 | 无分页（**审核时**，现已修复） | `grep -rn "take:\|skip:\|cursor" backend/src` → 当时为空 |
@@ -756,6 +764,38 @@ liveness 失败 → **重启进程**；readiness 失败 → **摘掉流量，不
 但**没有真正起容器**验证「无 502 窗口」—— 本环境无 Docker 引擎。这一项与 E3 的 nginx 改动
 同属「只做了结构校验」，若要补齐同样需要一台 Docker 可用的机器。
 
+### 7.6 C3：把「已应用迁移不可修改」做成能咬人的门禁
+
+**它防的是什么**：迁移一旦被应用过，就已经写进某些库的 `_prisma_migrations` 表。
+回头改它会让「迁移历史」与「实际库结构」**永久分叉** ——
+跑过旧版的库不会重跑，新库跑的是改后的版本，于是两个库结构不同，而双方都认为自己是对的。
+**本地重建库完全看不出这个问题**（本地库可以随时重建），所以只能靠门禁拦。
+
+**判定规则刻意选最简的一条**，把误报压到零：
+
+| 变更类型 | 判定 | 理由 |
+| --- | --- | --- |
+| `M` 修改 | ❌ 违规 | 这正是「改了已应用迁移」 |
+| `D` 删除 | ❌ 违规 | 同上（重命名经 `--no-renames` 拆成 A+D，因此也被拦住） |
+| `A` 新增 | ✅ 放行 | 新增正是迁移的**正常工作方式** |
+
+**「跳过」必须与「通过」区分开**。三种情形会跳过：没给基准提交、基准是全零 SHA
+（分支首次推送）、基准在本地不可达（浅克隆）。跳过时脚本**显式打印原因**并退出 0 ——
+静默放行会让人以为检查过了。这也是为什么该 job 的 checkout 要加 `fetch-depth: 0`：
+默认的 depth 1 里根本没有基准提交，脚本只能跳过，门禁等于没接。
+
+**双向本地验证**（用临时分支，测完即删）：
+
+```
+改 backend/prisma/migrations/0001_init/migration.sql  → 退出码 1，打印「已提交的迁移文件被修改」
+新增 backend/prisma/migrations/0003_probe/            → 退出码 0，列为「新增（允许）」
+无基准 / 全零 SHA / 不可达基准                          → 退出码 0，且显式打印跳过原因
+```
+
+**C5 的验证限度**：§6.3.1 写清了 6 个 required checks 与配套约束，但**仓库内的文档
+无法证明 GitHub 侧已配置**。这一点在文中如实标注了 —— 验收时应打开
+`Settings → Branches → Branch protection rules` 当场核对，而不是「文档写了就算做了」。
+
 ---
 
 ## 8. 一句话总结
@@ -787,8 +827,14 @@ liveness 失败 → **重启进程**；readiness 失败 → **摘掉流量，不
 - **S3**（`web` 等 `api` 健康）—— `depends_on` 改为 `condition: service_healthy`，消掉启动窗口的 502；
   ⚠️ 仅 `docker-compose config` 结构校验（本环境无 Docker 引擎）。
 
-**P2 已启动**：**S6**（liveness / readiness 拆分）—— 停库实测确认了两者分道扬镳：
-`/health/live` 仍 200、`/health/ready` 返回 503（见 §7.5）。
+**P2 已启动**（本轮完成三项）：
 
-仍待做：S4（entrypoint 错误可诊断，**需 Docker 引擎**），以及 P2 余项
-（E5 会话缓存 —— 需先解决与「登出即时失效」的冲突；S7 登录限流；C3 迁移不可改检测；C5 分支保护）。
+- **S6**（liveness / readiness 拆分）—— 停库实测确认了两者分道扬镳：
+  `/health/live` 仍 200、`/health/ready` 返回 503（见 §7.5）。
+- **C3**（已应用迁移不可修改）—— 新增 `scripts/check-migrations-immutable.mjs` 并接入 `migrations` job；
+  双向本地验证（改迁移 → 报违规；新增迁移目录 → 放行），见 §7.6。
+- **C5**（分支保护声明）—— §6.3.1 明确 `main` 的 6 个 required checks；⚠️ 无法从仓库证明
+  GitHub 侧已配置，验收时需当场核对。
+
+仍待做：**S4**（entrypoint 错误可诊断，**需 Docker 引擎**）与 **S7**（登录限流，可与 E4 合并）。
+**E5（会话缓存）不建议做** —— 它与「登出即时失效」直接冲突，报告 §5.1 该行已说明取舍。

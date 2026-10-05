@@ -179,13 +179,30 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
+      # fetch-depth: 0 —— C3 的「已应用迁移不可修改」需要与基准提交比对，
+      # 默认的浅克隆（depth 1）里没有基准提交，脚本只能跳过。
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: backend/package-lock.json
+
+      # ── C3 已应用迁移不可修改 ──────────────────────────────────────
+      # 迁移一旦被应用过，就已经写进某些库的 _prisma_migrations 表。
+      # 回头改它会让「迁移历史」与「实际库结构」永久分叉：跑过旧版的库不会
+      # 重跑，于是两个库结构不同，而双方都认为自己是对的 —— 本地重建库看不出。
+      # 正确做法是新增一个迁移目录，把修正写成一次新的迁移。
+      #
+      # 基准提交的取法：PR 用 base.sha；push 用 event.before（上一个 HEAD）。
+      # 首次推送时 before 是全零 SHA，脚本会**显式打印原因并跳过**（不是静默放行）。
+      - name: 检测已应用迁移是否被修改（报告 §5.3 C3）
+        env:
+          MIGRATION_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: node scripts/check-migrations-immutable.mjs
 
       - name: 安装依赖
         working-directory: backend

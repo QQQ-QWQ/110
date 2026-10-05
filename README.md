@@ -318,7 +318,7 @@ cd frontend && npm run format:check && npm run lint && npm run typecheck && npm 
 
 该 job 刻意**不用** `docker compose up` 起服务，而是用 postgres service + 直接运行编译产物：本环境拿不到 GitHub Actions 的 job 日志（公开仓库的 logs 接口也要求管理员权限），用 compose 起服务一旦失败就只能看到「某一步红了」而看不到原因，会陷入「改一版→推一次→猜一次」的循环。现有写法与 `docs/测试与验证记录.md` §4.2 中手工验证过的命令逐字一致，**每条都能在本地复现**。
 
-验证：run #8（commit `610dfa7`）**6/6 job 全绿，64 个步骤，仅 1 个 `if: failure()` 日志步骤按设计跳过**；新增 job 约 37 秒。
+验证：run #8（commit `610dfa7`）**6/6 job 全绿，64 个步骤，仅 1 个 `if: failure()` 日志步骤按设计跳过**；新增 job 约 37 秒。此后每次落地都复验：run #10（`c9017b9`）与 run #11（`d88e3b6`）均为 **6/6 job、66 个步骤全绿**（新增「迁移漂移检测」与「数据保留清理验证」两步）。
 
 > 完整的排查过程、证据与架构评估见 **[`docs/后端架构审核与CI排查报告.md`](docs/后端架构审核与CI排查报告.md)**。
 
@@ -350,8 +350,8 @@ cd frontend && npm run format:check && npm run lint && npm run typecheck && npm 
 
 | 项 | 落地内容 | 验证 |
 | --- | --- | --- |
-| C6 CI 起服务跑 e2e | 第 6 个 CI job（见上） | ✅ run #8 |
-| E1 列表游标分页 | 键集分页 + 前端「加载更多」 | ✅ 单测 12 + e2e DEM-11 12 项 |
+| C6 CI 起服务跑 e2e | 第 6 个 CI job（见上） | ✅ run #8（`610dfa7`） |
+| E1 列表游标分页 | 键集分页 + 前端「加载更多」 | ✅ 单测 12 + e2e DEM-11 12 项；run #11（`d88e3b6`） |
 | S1 数据保留清理 | 幂等记录 / 会话的定时清理 | ✅ 单测 14 + 真实库 5/5 |
 | S2 连接池与语句超时 | `connection_limit` / `pool_timeout` / `statement_timeout=10s` | ✅ `SHOW statement_timeout` 由 `0` → `10s` |
 | E3 解除横扩阻塞 | 去 `container_name`；nginx `resolver` + 变量式 `proxy_pass` | ⚠️ 仅配置结构校验（无 Docker 引擎 / nginx 二进制） |

@@ -11,7 +11,7 @@
 | 议题 | 结论 |
 |---|---|
 | **CI 为何持续失败** | **两个独立根因**，而非 5 个 job 各自的问题：① `schema.prisma` 的 `@relation` 属性跨行书写，Prisma 解析器不支持 → 同时打红「后端」与「迁移可回放性」两个 job；② 「后端」job 的 `prisma validate` 步骤缺 `DATABASE_URL` → 即使修好①该步骤仍会红。 |
-| **当前状态** | **已修复并验证**：commit `603cedc` 推送后 CI 由「4 次全红」转绿，此后 run #6 / #7 / #8 / #9 / #10 **连续全绿**。最新 run #10（`c9017b9`）为 **6 个 job、66 个步骤全部 success**（唯一 skipped 的是 `if: failure()` 的日志步骤，按设计跳过）。 |
+| **当前状态** | **已修复并验证**：commit `603cedc` 推送后 CI 由「4 次全红」转绿，此后 run #6 ~ #11 **连续全绿**。最新 run #11（`d88e3b6`）为 **6 个 job、66 个步骤全部 success**（唯一 skipped 的是 `if: failure()` 的日志步骤，按设计跳过）。 |
 | **可扩展性** | 读路径存在 **2 处会随数据量线性恶化**的无界查询（列表无分页、详情含无界事件流）；横向扩展有 **2 个硬阻塞**（`container_name` 阻断 `--scale`、nginx 不在运行时重解析 DNS）。写路径（乐观锁 + 幂等）本身是可横向扩展的。 |
 | **稳定性** | 核心写路径的事务/幂等/乐观锁设计是**扎实的**；主要缺口在**运维面**：幂等记录与会话过期行无清理（无界增长）、连接池与语句超时未显式配置、无 request-id 关联日志、`web` 未等服务健康即启动。 |
 | **最高优先级动作** | **P0 共 6 项已全部落地**（见 §6）：CI 起服务跑 e2e、列表游标分页、数据保留清理、连接池与超时、解除横向扩展阻塞、迁移漂移检测。5 项有自动化验证（单测 / 真实数据库 / e2e / CI）；**唯一例外是 E3 的 nginx 改动**，只做了结构解析校验（本环境无 Docker 引擎与 nginx 二进制）。 |
@@ -565,7 +565,7 @@ if npx prisma migrate deploy; then ...
 
 ### P0 —— 本次必做（低风险、高收益、改动小）
 
-> 进度：**6 项全部完成**。C6 由远端 run #8 验证；其余 5 项由 run #10 验证（6/6 job 全绿，66 个步骤）。
+> 进度：**6 项全部完成**。C6 由远端 run #8 验证；C2/S1/S2/E3 由 run #10 验证；E1 由 run #11（6/6 job 全绿，66 个步骤）验证。
 >
 > 落地时与本表初稿的**偏差**已在下方逐项标注 —— 尤其是 C6（放弃 compose 起服务，理由见 §5.3）
 > 与 E3 的 nginx 部分（无法在本环境执行，仅做了结构校验）。
@@ -573,7 +573,7 @@ if npx prisma migrate deploy; then ...
 | 项 | 落地内容 | 验证证据 |
 |---|---|---|
 | ✅ **C6 CI 起服务跑 e2e**（**最优先**） | `.github/workflows/ci.yml` 新增 `e2e` job —— postgres service + 编译产物直跑，**未**用 `docker compose up`（反转理由见 §5.3） | ✅ run #8（`610dfa7`）**6/6 job 全绿**，新增 job 约 37 秒 |
-| ✅ **E1 列表游标分页** | 新增 `domain/pagination.ts`（零依赖纯函数）；`requirements.service.ts` 改键集分页，`orderBy` 补决胜键 `id`；controller 加 `limit`/`cursor`；前端 `api.ts` + `ListView.vue` 加「加载更多」 | ✅ 单测 12 条（含**模拟翻页**：25 行大量同毫秒，逐页取完不重复不遗漏）；✅ e2e 新增 DEM-11 共 12 项断言全通过 |
+| ✅ **E1 列表游标分页** | 新增 `domain/pagination.ts`（零依赖纯函数）；`requirements.service.ts` 改键集分页，`orderBy` 补决胜键 `id`；controller 加 `limit`/`cursor`；前端 `api.ts` + `ListView.vue` 加「加载更多」 | ✅ 单测 12 条（含**模拟翻页**：25 行大量同毫秒，逐页取完不重复不遗漏）；✅ e2e 新增 DEM-11 共 12 项断言全通过；✅ run #11（`d88e3b6`）该 job success |
 | ✅ **S1 数据保留清理** | 新增 `domain/retention.ts` + `core/maintenance.service.ts`；启动跑一次 + 周期跑，`unref` 不阻塞退出 | ✅ 单测 14 条（含 **where 子句 vs 判定函数一致性矩阵**）；✅ `scripts/verify-retention.mjs` 对真实库 5/5 通过（含「PROCESSING 超 100h 必须保留」） |
 | ✅ **S2 连接池与超时** | `.env.example` + `docker-compose.yml` 显式声明 `connection_limit` / `pool_timeout` / `statement_timeout` | ✅ 实测 `SHOW statement_timeout` 由 `0` 变 `10s`；`connection_limit=2` 确实改变并发行为；✅ `docker-compose config` 插值正确 |
 | ✅ **E3 解除横扩阻塞** | `docker-compose.yml` 移除 3 处 `container_name`；`nginx.conf` 改 `resolver` + 变量式 `proxy_pass` | ⚠️ **部分验证**：`container_name` 由 `docker-compose config` 确认移除；nginx 改动**只做了结构解析校验**（无 Docker 引擎、无 nginx 二进制，语义未执行） |
@@ -612,6 +612,7 @@ E5 会话缓存（**需先解决与「登出即时失效」的冲突**）、S6 l
 | 修复后 CI 全绿 | run #5（`603cedc`）5/5 job success |
 | C6 落地后 CI 全绿 | run #8（`610dfa7`）**6/6 job success，64 步骤，仅 1 个 `if: failure()` 步骤按设计跳过** |
 | P0 全部落地后 CI 全绿 | run #10（`c9017b9`）**6/6 job success，66 步骤**（新增「迁移漂移检测」与「数据保留清理验证」两步） |
+| E1 落地后 CI 全绿 | run #11（`d88e3b6`）**6/6 job success，66 步骤**（`端到端验证 DEM-00 ~ DEM-08 + DEM-11` 步骤 success） |
 | C6 失败会变红（链路核验） | `tail -20 scripts/e2e.mjs` → `process.exit(failures === 0 ? 0 : 1)`；Actions `run:` 默认 `bash -e` |
 | 后端本地门禁 | `npm run format:check` / `npm run lint` / `npm test`（**76/76**，含 retention 14 + pagination 12） |
 | C2 漂移检测双向验证 | 无漂移 → 退出码 0 `No difference detected.`；故意给 schema 加字段 → 退出码 2 `[+] Added column drift_probe_field` |

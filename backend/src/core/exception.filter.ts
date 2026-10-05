@@ -1,6 +1,7 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, Logger } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { AppError } from './errors';
+import { requestIdOf } from './request-id';
 
 /**
  * 统一错误响应。
@@ -8,7 +9,9 @@ import { AppError } from './errors';
  * 关键点：
  *  - 4xx 只回传语义化消息，**绝不回传堆栈 / SQL / 内部 ID**；
  *  - 5xx 一律回传通用文案，细节只进服务端日志；
- *  - 前端据此区分「成功 / 失败」，因此失败永远不会被渲染成成功。
+ *  - 前端据此区分「成功 / 失败」，因此失败永远不会被渲染成成功；
+ *  - 每条日志都带上请求编号（`rid`），5xx 的响应体里也回传它 ——
+ *    用户报障时把编号给出来，就能在日志里精确定位那一次请求（报告 §5.2 S5）。
  */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -18,6 +21,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
+    const rid = requestIdOf(response);
+    const where = `${request.method} ${request.originalUrl} rid=${rid ?? '-'}`;
 
     let status = 500;
     let code = 'INTERNAL_ERROR';
@@ -52,13 +57,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
     } else {
       // 未预期异常：记录到服务端，对外只给通用文案
       this.logger.error(
-        `${request.method} ${request.originalUrl} 未处理异常`,
+        `${where} 未处理异常`,
         exception instanceof Error ? exception.stack : String(exception),
       );
     }
 
     if (status >= 500) {
-      this.logger.error(`${request.method} ${request.originalUrl} → ${status} ${code}`);
+      this.logger.error(`${where} → ${status} ${code}`);
     }
 
     response.status(status).json({
@@ -66,6 +71,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
         code,
         message,
         ...(details ? { details } : {}),
+        // 仅 5xx 回传编号：4xx 是调用方自己的问题，回传它没有意义，
+        // 只会无谓地扩大响应契约。5xx 回传，用户才能把编号报给管理员。
+        ...(status >= 500 && rid ? { requestId: rid } : {}),
       },
     });
   }

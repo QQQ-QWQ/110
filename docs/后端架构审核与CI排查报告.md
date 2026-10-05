@@ -13,8 +13,8 @@
 | **CI 为何持续失败** | **两个独立根因**，而非 5 个 job 各自的问题：① `schema.prisma` 的 `@relation` 属性跨行书写，Prisma 解析器不支持 → 同时打红「后端」与「迁移可回放性」两个 job；② 「后端」job 的 `prisma validate` 步骤缺 `DATABASE_URL` → 即使修好①该步骤仍会红。 |
 | **当前状态** | **已修复并验证**：commit `603cedc` 推送后 CI 由「4 次全红」转绿，此后 run #6 ~ #11 **连续全绿**。最新 run #11（`d88e3b6`）为 **6 个 job、66 个步骤全部 success**（唯一 skipped 的是 `if: failure()` 的日志步骤，按设计跳过）。 |
 | **可扩展性** | 读路径存在 **2 处会随数据量线性恶化**的无界查询（列表无分页、详情含无界事件流）；横向扩展有 **2 个硬阻塞**（`container_name` 阻断 `--scale`、nginx 不在运行时重解析 DNS）。写路径（乐观锁 + 幂等）本身是可横向扩展的。 |
-| **稳定性** | 核心写路径的事务/幂等/乐观锁设计是**扎实的**；主要缺口在**运维面**：幂等记录与会话过期行无清理（无界增长）、连接池与语句超时未显式配置、无 request-id 关联日志、`web` 未等服务健康即启动。 |
-| **最高优先级动作** | **P0 共 6 项已全部落地**（见 §6）：CI 起服务跑 e2e、列表游标分页、数据保留清理、连接池与超时、解除横向扩展阻塞、迁移漂移检测。5 项有自动化验证（单测 / 真实数据库 / e2e / CI）；**唯一例外是 E3 的 nginx 改动**，只做了结构解析校验（本环境无 Docker 引擎与 nginx 二进制）。**P1 已启动**：C4 本地前置检查落地（`scripts/preflight.mjs`，CI 与本地同源，见 §5.3、§7.1）。 |
+| **稳定性** | 核心写路径的事务/幂等/乐观锁设计是**扎实的**；主要缺口在**运维面**：幂等记录与会话过期行无清理（无界增长）、连接池与语句超时未显式配置、无 request-id 关联日志、`web` 未等服务健康即启动。**其中前三项已修复**（S1 / S2 / S5，见 §6），`web` 等服务健康（S3）仍待做。 |
+| **最高优先级动作** | **P0 共 6 项已全部落地**（见 §6）：CI 起服务跑 e2e、列表游标分页、数据保留清理、连接池与超时、解除横向扩展阻塞、迁移漂移检测。5 项有自动化验证（单测 / 真实数据库 / e2e / CI）；**唯一例外是 E3 的 nginx 改动**，只做了结构解析校验（本环境无 Docker 引擎与 nginx 二进制）。**P1 已启动**：C4 本地前置检查（`scripts/preflight.mjs`，CI 与本地同源，见 §5.3、§7.1）与 S5 请求编号贯穿日志（见 §5.2、§7.2）已落地。 |
 
 ---
 
@@ -475,7 +475,7 @@ if npx prisma migrate deploy; then ...
 | S2 | ✅ **已落地** — 连接池与超时显式化 | `DATABASE_URL` 加 `connection_limit` / `pool_timeout`；通过 libpq `options` 设置 `statement_timeout`。 | 见 4.2-③：`statement_timeout` 需按实际数据量调参，过短会误杀正常慢查询。当前取 10s（先宽松）。 |
 | S3 | **`web` 等 `api` 健康** | `depends_on: api: condition: service_healthy`。 | 见 4.2-④：`web` 启动被推迟（最多 40s+），换取无 502 窗口。 |
 | S4 | **entrypoint 错误可诊断** | 输出 `migrate deploy` 完整 stderr；区分连接类/SQL 类错误，后者立即失败。 | 见 4.2-⑤：错误分类依赖 stderr 文本匹配，略脆弱；「打印真实错误」是纯收益。 |
-| S5 | **request-id 贯穿日志** | 中间件生成/透传 `X-Request-Id`，异常过滤器与访问日志输出，5xx 响应头回传。 | 见 4.2-⑥：轻量版（只改过滤器与日志）优于全量 AsyncLocalStorage 改造。 |
+| S5 | ✅ **已落地** | `core/request-id.ts`：中间件生成/透传 `X-Request-Id`（响应头始终回传），访问日志与异常过滤器输出该编号，**5xx 的响应体里也带上它**。 | 见 4.2-⑥：采用轻量版（只改过滤器与日志），**未**引入 AsyncLocalStorage / nestjs-cls —— 那要改动所有 service 的签名，而本项目没有跨多层异步的日志关联需求。透传的入参需通过安全校验（可见 ASCII、≤128 字符）：编号会进日志行，不加限制就是日志注入与日志撑爆两个口子。 |
 | S6 | **liveness / readiness 拆分** | `/api/health/live` 与 `/api/health/ready`。 | 见 4.2-⑦：当前单机部署收益有限，P2。 |
 | S7 | **登录限流** | 按账号 + IP 的失败计数与短时封禁（内存实现）。 | 与 E4 合并实现。内存实现意味着多副本下计数不共享，防护强度下降 —— 对本题规模可接受，若需强一致则应落库。 |
 
@@ -488,7 +488,7 @@ if npx prisma migrate deploy; then ...
 | C3 | **已应用迁移不可修改** | 检测 `prisma/migrations/` 下**已存在目录**内文件被修改 → 告警（新增目录放行）。 | 需要在 CI 中对比 base 分支，实现略复杂（`git diff --name-only ${{ github.event.pull_request.base.sha }}...HEAD -- prisma/migrations`）。纯 push 触发时无 base，需降级为「跳过并提示」。 |
 | C4 | ✅ **已落地** | `scripts/preflight.mjs`：一键复跑 CI 的机械检查。**并且 CI 的 `hygiene` job 直接调用它**（`--mechanical`），于是「本地 preflight 绿」与「CI hygiene 绿」是同一件事，不存在两套会漂移的检查。 | 把反馈周期从 3~5 分钟压到 **1 秒**。代价有两处，都已记录：① 这些检查在 CI 里合并成了一个步骤，粒度不如从前 —— 但这正是该脚本的意义（拿不到日志时本地跑一遍就能定位）；② 需要开发者记得跑，用 `pre-push` 钩子可强制，但钩子可被 `--no-verify` 绕过（设计使然，不是缺陷）。 |
 | C5 | **分支保护声明** | 在 `docs/代码审查标准与流程.md` 明确 main 的 required status checks，作为交付验收项。 | 仓库内的文档无法强制 GitHub 侧配置；但**把「已配置分支保护」写成验收项**能确保它不被遗忘。 |
-| **C6** | ✅ **已落地**（**本轮新增，优先级最高**） | 新增 `e2e` job：postgres service → `prisma generate` + `migrate deploy` → `npm run build` → `node dist/seed.js` → 种子完整性断言 → `node dist/main.js` 等就绪 → `node scripts/e2e.mjs`（DEM-00~08 + DEM-11，56 项断言）。 | **这是唯一能拦住「跨层缺陷」的检查。** 见下方说明 —— 它的必要性已由本轮实跑直接证明。 |
+| **C6** | ✅ **已落地**（**本轮新增，优先级最高**） | 新增 `e2e` job：postgres service → `prisma generate` + `migrate deploy` → `npm run build` → `node dist/seed.js` → 种子完整性断言 → `node dist/main.js` 等就绪 → `node scripts/e2e.mjs`（DEM-00~08 + DEM-11 + DEM-12，61 项断言）。 | **这是唯一能拦住「跨层缺陷」的检查。** 见下方说明 —— 它的必要性已由本轮实跑直接证明。 |
 
 **为什么 C6 的优先级最高（有实证）**
 
@@ -503,7 +503,7 @@ if npx prisma migrate deploy; then ...
 两者的共同点：**都只在服务真正跑起来时才暴露**。因此在 CI 里跑一遍 e2e
 不是「锦上添花」，而是补上了当前门禁体系中缺失的一整层。
 
-> **取舍**：该 job 会让 CI 时间显著增加（安装依赖 + 构建 + 起库 + 起服务 + 56 项断言，估 +2~3 分钟），
+> **取舍**：该 job 会让 CI 时间显著增加（安装依赖 + 构建 + 起库 + 起服务 + 61 项断言，估 +2~3 分钟），
 > 且需要维护「CI 里如何起服务」的编排逻辑（与 `docker compose` 存在重复）。
 
 **落地时的决定：没有按上面的建议用 `docker compose up`，而是用 postgres service + 直接运行编译产物。**
@@ -534,7 +534,7 @@ if npx prisma migrate deploy; then ...
 
 | 验证点 | 结果 |
 |---|---|
-| 新增 `e2e` job 在真实 runner 上跑通 | ✅ 6 个 step 全部 success（`Initialize containers` → 安装依赖 → generate/migrate/build/seed → 种子完整性断言 → 起 API 等就绪 → 44 项断言；**run #8 时点**，脚本后续扩展至 DEM-11 共 56 项，见 §7） |
+| 新增 `e2e` job 在真实 runner 上跑通 | ✅ 6 个 step 全部 success（`Initialize containers` → 安装依赖 → generate/migrate/build/seed → 种子完整性断言 → 起 API 等就绪 → 44 项断言；**run #8 时点**，脚本后续扩展至 DEM-11 + DEM-12 共 61 项，见 §7） |
 | 是否拖慢流水线 | 该 job 约 **37 秒**（含 `npm ci`、`prisma generate`、`migrate deploy`、`nest build`、起库起服务与全部断言），远低于预估的 +2~3 分钟 —— 因为 `setup-node` 的 npm 缓存命中了 |
 | 是否引入不稳定 | 6 个 job 一次性全绿，无重试 |
 | 既有 5 个 job 是否受影响 | ❌ 无。run #8 中其余 5 个 job 结论与 run #7 一致 |
@@ -583,8 +583,8 @@ if npx prisma migrate deploy; then ...
 
 | 项 | 状态 |
 |---|---|
-| **C4 本地前置检查** | ✅ **已完成** —— `scripts/preflight.mjs`（8 项检查）；CI 的 `hygiene` job 改为**直接调用它**，本地与 CI 同源。6 项负例验证见 §7 |
-| S5 request-id 贯穿日志 | ⏳ 待做（轻量版：只改过滤器与日志） |
+| **C4 本地前置检查** | ✅ **已完成** —— `scripts/preflight.mjs`（8 项检查）；CI 的 `hygiene` job 改为**直接调用它**，本地与 CI 同源。6 项负例验证见 §7.1 |
+| **S5 request-id 贯穿日志** | ✅ **已完成** —— `core/request-id.ts`（中间件 + 访问日志）+ 异常过滤器回传编号；单测 12 条 + e2e DEM-12 共 5 项断言，见 §7.2 |
 | E2 详情/历史分页 | ⏳ 待做 |
 | E4 登录并发闸门 | ⏳ 待做 |
 | S3 `web` 等 `api` 健康 | ⏳ 待做 —— **需 Docker 引擎**才能验证，本环境不具备 |
@@ -621,13 +621,16 @@ E5 会话缓存（**需先解决与「登出即时失效」的冲突**）、S6 l
 | P0 全部落地后 CI 全绿 | run #10（`c9017b9`）**6/6 job success，66 步骤**（新增「迁移漂移检测」与「数据保留清理验证」两步） |
 | E1 落地后 CI 全绿 | run #11（`d88e3b6`）**6/6 job success，66 步骤**（`端到端验证 DEM-00 ~ DEM-08 + DEM-11` 步骤 success） |
 | C6 失败会变红（链路核验） | `tail -20 scripts/e2e.mjs` → `process.exit(failures === 0 ? 0 : 1)`；Actions `run:` 默认 `bash -e` |
-| 后端本地门禁 | `npm run format:check` / `npm run lint` / `npm test`（**76/76**，含 retention 14 + pagination 12） |
+| 后端本地门禁 | `npm run format:check` / `npm run lint` / `npm test`（**88/88**，含 retention 14 + pagination 12 + request-id 12） |
 | C2 漂移检测双向验证 | 无漂移 → 退出码 0 `No difference detected.`；故意给 schema 加字段 → 退出码 2 `[+] Added column drift_probe_field` |
 | S1 真实库验证 | `node scripts/verify-retention.mjs` → 5/5 通过（含「PROCESSING 超 100h 必须保留」） |
 | S2 生效验证 | `SHOW statement_timeout` 由 `0` → `10s`（`options=-c%20statement_timeout%3D10000`） |
-| E1 端到端验证 | `node scripts/e2e.mjs` → **56 项断言 0 失败**（含 DEM-11 共 12 项） |
+| E1 端到端验证 | `node scripts/e2e.mjs` → **61 项断言 0 失败**（含 DEM-11 共 12 项 + DEM-12 共 5 项） |
 | C4 preflight 全绿 | `node scripts/preflight.mjs` → **8/8 通过**（机械层 5 项 + 工具层 3 项） |
 | C4 preflight 负例验证 | 逐项制造违规，**6/6 均被检出**（退出码 1，且只有该项报红）—— 矩阵见 §7.1 |
+| S5 请求编号单测 | `backend/test/request-id.test.js` 12 条（含「换行/控制字符必须被拒绝」与「5xx 响应体带 requestId、4xx 不带」） |
+| S5 请求编号端到端 | `node scripts/e2e.mjs` → DEM-12 共 5 项断言（响应头始终回传、合法入参原样透传、含空格/超长入参被丢弃、4xx 响应体不带编号） |
+| S5 透传确实落到日志 | 服务端日志出现 `[HTTP] GET /api/requirements → 200 4.5ms rid=e2e-muv03wsv-rid` —— 客户端传入的编号被原样沿用，这正是「用户报编号 → 管理员 grep 日志」能成立的前提 |
 | CHECK 约束清单 | `grep -oE '"[a-z_]+_chk"' backend/prisma/migrations/0001_init/migration.sql \| sort -u` → 15 条 |
 | 幂等记录无清理（**审核时**，现已修复） | `grep -rn "idempotencyRecord" backend/src \| grep -iE "delete\|clean\|purge"` → 当时为空 |
 | 无分页（**审核时**，现已修复） | `grep -rn "take:\|skip:\|cursor" backend/src` → 当时为空 |
@@ -653,6 +656,21 @@ E5 会话缓存（**需先解决与「登出即时失效」的冲突**）、S6 l
 
 **一个必须说明的局限**：本机 `core.autocrlf=true` 会在 `git add` 时把 CRLF 规范化成 LF，因此「索引里存在 CRLF」这一状态**在本机几乎无法复现**（上面第 1 项测的是「关键文件在工作区是 CRLF」这条，它对应 `docker build` 的真实故障：构建上下文取自工作区而非索引）。索引层的 CRLF 只在 CI（`autocrlf=false`）或 `.gitattributes` 被人改坏时才可能出现 —— 也就是说，这一条同时也是「**有人删掉 `* text=auto eol=lf`**」的回归守卫。
 
+### 7.2 S5：请求编号「真的能用来定位」吗？
+
+这一项的验收标准不是「代码里有中间件」，而是**端到端链路闭合**：客户端传入的编号 → 出现在服务端日志 → 出问题时能 grep 到。三段都实测过：
+
+| 环节 | 验证方式 | 结果 |
+| --- | --- | --- |
+| 响应头始终回传 | e2e DEM-12 | ✅ `x-request-id` 非空 |
+| 合法入参被原样透传 | e2e DEM-12（带自定义头请求） | ✅ 响应头与日志都出现该值 |
+| 非法入参被丢弃 | e2e DEM-12（含空格 / 500 字符）+ 单测（换行、制表符、非 ASCII） | ✅ 均被替换为新生成的 UUID |
+| 编号确实落到日志 | 读服务端 stdout | ✅ `[HTTP] GET /api/requirements → 200 4.5ms rid=e2e-muv03wsv-rid` —— 客户端传入的编号被原样沿用 |
+| 4xx 不扩大响应契约 | e2e DEM-12 + 单测 | ✅ 响应体不带 `requestId`（仅响应头携带） |
+| 5xx 带上编号 | 单测（直接调过滤器 + 桩 host） | ✅ 响应体 `error.requestId` 存在；对外文案仍为通用文案，未泄露内部细节 |
+
+**一个容易踩空的地方**：含**换行**的编号在 e2e 里**测不了** —— `fetch`（undici）自己就拒绝含换行的请求头，根本发不出去。但「客户端会拦」不能成为省掉服务端校验的理由：上游网关或 `curl` 都可能把原始字节透传过来。因此换行/控制字符那几条改由**单测**覆盖（`backend/test/request-id.test.js` 中标 ★ 的用例），e2e 只测 `fetch` 发得出去、但服务端同样该拒绝的值（含空格、超长）。
+
 ---
 
 ## 8. 一句话总结
@@ -671,3 +689,12 @@ E5 会话缓存（**需先解决与「登出即时失效」的冲突**）、S6 l
 **一处必须说清的例外**：E3 的 nginx 改动**没有被执行验证** —— 本环境既无 Docker 引擎也无 nginx 二进制，
 只做了配置结构解析（所有指令均被正确解析）。其余各项都有单测 / 真实数据库 / e2e / CI 的实证。
 仍未被任何自动化覆盖的，只剩 `docker compose up --build` 的容器编排路径本身。
+
+**P1 已启动**（本轮完成两项）：
+
+- **C4**（本地前置检查）—— `scripts/preflight.mjs` 8 项检查，且 CI 的 `hygiene` job **直接调用它**，
+  本地与 CI 同源；6 项检查都做了负例验证（见 §7.1）。
+- **S5**（请求编号贯穿日志）—— 「客户端传入的编号 → 服务端日志」这条链路端到端实测闭合（见 §7.2）。
+
+仍待做：E2（详情/历史分页）、E4（登录并发闸门），以及 S3 / S4 —— 后两项**都需要 Docker 引擎才能验证**，
+在本环境不具备条件。

@@ -4,6 +4,7 @@ import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './core/exception.filter';
+import { accessLogMiddleware, requestIdMiddleware } from './core/request-id';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule, {
@@ -12,6 +13,12 @@ async function bootstrap(): Promise<void> {
 
   // 所有接口统一挂在 /api 下，便于 Nginx 反代
   app.setGlobalPrefix('api');
+
+  // 请求编号 + 访问日志：**越早注册越好**，之后产生的每一行日志都会带上 rid。
+  // 放在 helmet 之前，连 helmet 自身抛出的异常也能被关联到同一次请求。
+  // 详见 core/request-id.ts（报告 §5.2 S5）。
+  app.use(requestIdMiddleware);
+  app.use(accessLogMiddleware);
 
   app.use(
     helmet({

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 端到端验证脚本 —— DEM-01 ~ DEM-08 + DEM-11（列表游标分页）
+ * 端到端验证脚本 —— DEM-01 ~ DEM-08 + DEM-11（列表游标分页）+ DEM-12（请求编号）
  *
  * 把《docs/测试与验证记录.md》§3 的手工 curl 步骤收敛成**一条可重复执行的命令**，
  * 输出「期望状态码 / 实际状态码」对照表，全部通过时退出码为 0。
@@ -82,6 +82,8 @@ async function call(method, path, { body, headers = {}, cookie } = {}) {
     json,
     text,
     cookie: raw.map((c) => c.split(';')[0]).join('; '),
+    // 请求编号（报告 §5.2 S5）：用于断言「响应头始终回传编号」与「透传规则」
+    requestId: res.headers.get('x-request-id'),
   };
 }
 
@@ -478,6 +480,65 @@ async function main() {
     '不传游标 → 取第一页且 hasMore 为布尔',
     true,
     typeof noCursor.json?.pageInfo?.hasMore === 'boolean',
+  );
+
+  // ══════════════════ DEM-12 请求编号贯穿（S5）══════════════════
+  // 目的：用户报「刚才点了一下就报错了」时能给出一个编号，管理员据此在日志里
+  // 精确定位到那一次请求。因此要验证：编号始终回传、合法入参被透传、
+  // 非法入参被丢弃（防日志注入），且 4xx 不把编号塞进响应体。
+  const ridDefault = await call('GET', '/requirements', { cookie: alice });
+  check(
+    'DEM-12',
+    '响应头始终带 x-request-id',
+    true,
+    typeof ridDefault.requestId === 'string' && ridDefault.requestId.length > 0,
+  );
+
+  const mineRid = `e2e-${RUN}-rid`;
+  const ridEcho = await call('GET', '/requirements', {
+    cookie: alice,
+    headers: { 'X-Request-Id': mineRid },
+  });
+  check('DEM-12', '合法入参被原样透传', mineRid, ridEcho.requestId);
+
+  // 含空格的入参。这里**不用**换行符：fetch（undici）自己就会拒绝含换行的请求头，
+  // 根本发不出去。但「客户端会拦」不能成为省掉服务端校验的理由 —— 上游网关或
+  // curl 都可能把原始字节透传过来，所以服务端仍必须自己判。换行/控制字符那两条
+  // 由单测覆盖（backend/test/request-id.test.js 中标 ★ 的用例）。
+  const unsafeRid = 'bad id';
+  const ridUnsafe = await call('GET', '/requirements', {
+    cookie: alice,
+    headers: { 'X-Request-Id': unsafeRid },
+  });
+  check(
+    'DEM-12',
+    '★ 含空格的入参被丢弃（防日志注入）',
+    true,
+    typeof ridUnsafe.requestId === 'string' &&
+      ridUnsafe.requestId.length > 0 &&
+      ridUnsafe.requestId !== unsafeRid,
+  );
+
+  const longRid = 'a'.repeat(500);
+  const ridLong = await call('GET', '/requirements', {
+    cookie: alice,
+    headers: { 'X-Request-Id': longRid },
+  });
+  check(
+    'DEM-12',
+    '超长入参被丢弃并重新生成',
+    true,
+    ridLong.requestId !== longRid && (ridLong.requestId ?? '').length <= 128,
+  );
+
+  const rid404 = await call('GET', '/requirements/00000000-0000-4000-8000-0000000000ff', {
+    cookie: alice,
+  });
+  check(
+    'DEM-12',
+    '4xx 响应体不带 requestId（仅响应头）',
+    false,
+    'requestId' in (rid404.json?.error ?? {}),
   );
 
   // ══════════════════ 输出报告 ══════════════════

@@ -925,6 +925,27 @@ N 个副本就能拿到 N 倍尝试次数。要强一致需落库（给登录路
 > **一处如实说明**：Dependabot 的**安全更新**（security updates）是仓库设置里的开关，
 > 不在这个配置文件里。配置了版本更新不等于开了安全更新 —— 交付验收时应确认两者都已启用。
 
+**接入当天就抓到一个真问题（而且是门禁判对了）**：配置生效后 Dependabot 立刻开出 PR，
+其中 `@nestjs/common` 那个 PR 的 CI **红了**。原因在本地完整复现：
+
+```
+npm error code ERESOLVE
+While resolving: @nestjs/config@4.0.4
+Found: @nestjs/common@12.1.2
+Could not resolve dependency:
+peer @nestjs/common@"^10.0.0 || ^11.0.0" from @nestjs/config@4.0.4
+```
+
+即 Dependabot 试图把 `@nestjs/common` **单独**升到 12.x，而 `@nestjs/core` 仍在 11.x、
+`@nestjs/config` 的 peer 还写着 `@nestjs/common ^10 || ^11` —— 这是框架的「半升级」，
+`npm ci` 必然失败。**CI 判得对，是 Dependabot 的分组配置有缺陷。**
+
+修法：把 `@nestjs/*` 分成**一组**（保证它们同版本一起升），并把 `@nestjs/*` 的 major
+加进 ignore —— 框架主版本要等**整个生态**跟上才能升，那不是自动 PR 能决定的事。
+
+这件事本身就是「门禁有价值」的最好证据：**它拦住了一个真实的、会让构建失败的依赖变更**，
+而且暴露出了配置层面的缺陷，而不是等到合入之后才发现。
+
 ---
 
 ## 8. 一句话总结

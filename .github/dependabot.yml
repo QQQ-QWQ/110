@@ -31,9 +31,16 @@ updates:
     labels:
       - dependencies
     groups:
+      # NestJS 各包必须**同主版本一起升**。反例已经发生过：Dependabot 的
+      # 第一个 PR 把 `@nestjs/common` 单独升到 12.x，而 `@nestjs/core` 还在 11.x、
+      # `@nestjs/config` 的 peer 仍写着 `@nestjs/common ^10 || ^11` ——
+      # `npm ci` 直接 ERESOLVE 失败（已在本地复现）。CI 判得对，是分组配置有缺陷。
+      nestjs:
+        patterns: ['@nestjs/*']
       # minor / patch 合成一个 PR（major 会被排除，单独开）
       minor-and-patch:
         patterns: ['*']
+        exclude-patterns: ['@nestjs/*']
         update-types: ['minor', 'patch']
     ignore:
       # Prisma 大版本会改动迁移语义与生成的 Client，必须人工评估后手动升。
@@ -41,6 +48,11 @@ updates:
       - dependency-name: prisma
         update-types: ['version-update:semver-major']
       - dependency-name: '@prisma/client'
+        update-types: ['version-update:semver-major']
+      # NestJS 大版本同理，而且更严格：框架主版本要等**整个生态**（@nestjs/config
+      # 等）都跟上才能升 —— 那不是自动 PR 能决定的事。上面已把 @nestjs/* 分成一组，
+      # 这里再挡住 major，确保「半升级」不会以自动 PR 的形式出现。
+      - dependency-name: '@nestjs/*'
         update-types: ['version-update:semver-major']
 
   # ---------- 前端依赖 ----------

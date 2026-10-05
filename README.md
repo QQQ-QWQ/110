@@ -189,6 +189,7 @@ docker compose up --build
 │   ├── preflight.mjs           # 本地前置检查：CI 机械检查的一键复跑（C4）
 │   ├── check-migrations-immutable.mjs  # 已应用迁移不可修改检测（C3，CI migrations job 调用）
 │   ├── verify-entrypoint.mjs   # 用假 npx 驱动真实 entrypoint，验证故障分流（S4，CI backend job 调用）
+│   ├── install-git-hooks.mjs   # 安装 pre-push 钩子，让「记得跑 preflight」变成「自动跑」（C4 收尾）
 │   ├── check-audit.mjs         # 依赖漏洞扫描：阻断 high/critical，允许显式且有日期的例外（P3）
 │   ├── e2e.mjs                 # 端到端验证脚本（DEM-01~08 + DEM-11~16，一条命令产出对照表）
 │   └── verify-retention.mjs    # 数据保留清理的真实库验证（S1）
@@ -286,6 +287,17 @@ node scripts/preflight.mjs --fix         # 能自动修的顺手修掉（行尾 
 ```
 
 CI 的 `hygiene` job **直接调用同一个脚本**，因此「本地 preflight 绿」与「CI hygiene 绿」是同一件事 —— 不存在两套会各自漂移的检查，也不会出现「本地过了 CI 不过」。8 项检查都经过**负例验证**（逐项制造违规确认会报红），矩阵见报告 §7.1。
+
+**让「记得跑」变成「自动跑」**：装一次 pre-push 钩子，推送前自动执行上面的检查。
+
+```bash
+cd backend && npm run hooks:install     # 一次安装，长期生效（钩子无法随仓库分发）
+node scripts/install-git-hooks.mjs --check   # 检查是否已安装
+```
+
+- 钩子在**推送前**运行（不是每次提交）—— preflight 要跑 Prettier 与 Prisma，放在 `pre-commit` 会让人想关掉它；而 pre-push 的频率正好匹配「一次推送 = 一次 CI 运行」。
+- 检查未通过会**阻止推送**并给出修法（`--fix` 能自动修一部分）。
+- 紧急通道：`git push --no-verify`。这是 git 的设计，不是缺陷 —— 钩子只是第一道防线，**真正的门禁仍在 CI**。
 
 ---
 
@@ -404,7 +416,7 @@ P2 —— 已完成 4 项：
 | C5 分支保护声明 | `docs/代码审查标准与流程.md` §6.3.1 明确 `main` 的 6 个 required status checks 与配套约束 | ⚠️ **文档项** —— 仓库内无法证明 GitHub 侧已配置，验收时需打开 `Settings → Branches` 当场核对 |
 | S7 登录失败限流 | 键 = **账号 + IP**；5 次 / 10 分钟 → 封禁 5 分钟；超限 → **429 + `Retry-After`**（与 E4 的 503 刻意区分「配额」与「容量」） | ✅ 单测 15 + e2e DEM-16 6 项；手工确认响应 `429` + `Retry-After: 298`；⚠️ **内存实现**，多副本下计数不共享（报告 §7.7 已标注） |
 
-**已知质量缺口（诚实披露）**：已有 `scripts/preflight.mjs` 可一键复跑 CI 的机械检查，但**尚未把它挂到 `pre-commit` / `pre-push` 钩子上**（目前仍需开发者主动跑）。依赖漏洞扫描已接入（`scripts/check-audit.mjs`，阻断 high/critical），但**有 2 条已豁免的例外**：① 后端 3 个 high 全部来自 `deepmerge-ts`（经 `prisma` → `@prisma/config` 传入，**精确锁定 7.1.5**，唯一修复是升到 Prisma 8 大版本）—— 漏洞需要合并攻击者可控的递归对象图，而 Prisma 配置来自仓库内静态文件且只在构建/启动时作为 CLI 使用，**不在 HTTP 请求路径上**；② 前端 2 个 moderate 来自 `vitest`（**仅开发期测试工具**，不进生产镜像，修复需破坏性升级）。两条豁免都写明了理由与复核时机，且**豁免消失时门禁会失败**提醒删除。另外 Dependabot 的**安全更新开关**（仓库设置项，不在配置文件里）需在交付时确认已启用。**接入当天 Dependabot 就开出了 PR，其中 `@nestjs/common` 那个 CI 红了 —— 门禁判对了**：它试图把 `@nestjs/common` 单独升到 12.x，而 `@nestjs/config` 的 peer 仍写着 `@nestjs/common ^10 || ^11`，`npm ci` 必然 ERESOLVE 失败（已本地复现）。据此把 `@nestjs/*` 分成一组并挡住其 major —— 框架主版本要等整个生态跟上才能升。单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互；跨层端到端行为由 `scripts/e2e.mjs` 覆盖（DEM-00~08 + DEM-11~16，已实跑 **93/93** 通过），并**已接入 CI**（`e2e` job，见上）。`docker compose up --build` 三容器一键启动、nginx 反代与命名卷挂载尚未实测（本机 Docker 引擎不可用）—— 这是当前门禁体系**最后一处空白**：`compose` job 只校验配置文件的语法与变量插值，并不真正起容器。**E3 的 nginx 改动因此只做了结构解析校验，语义未经验证** —— 若 `docker compose up` 后 `/api/` 返回 502，应优先检查该处（`resolver` + 变量式 `proxy_pass`）。DEM-09（停库降级为通用 500）与 DEM-10（重启后数据不丢）需要操作数据库进程，无法在 `e2e` job 内完成，仍属人工验证项（DEM-10 以「重启数据库进程」替代「容器重建」，未验证命名卷保留行为）。未做并发压测。前端组件测试为 SSR 渲染断言，不含 jsdom 点击交互模拟。
+**已知质量缺口（诚实披露）**：本地前置检查已有 `scripts/preflight.mjs`，并可用 `npm run hooks:install` 挂到 **pre-push 钩子**上自动执行（一次安装长期生效；钩子可被 `--no-verify` 绕过 —— 这是 git 的设计，真正的门禁仍在 CI）。依赖漏洞扫描已接入（`scripts/check-audit.mjs`，阻断 high/critical），但**有 2 条已豁免的例外**：① 后端 3 个 high 全部来自 `deepmerge-ts`（经 `prisma` → `@prisma/config` 传入，**精确锁定 7.1.5**，唯一修复是升到 Prisma 8 大版本）—— 漏洞需要合并攻击者可控的递归对象图，而 Prisma 配置来自仓库内静态文件且只在构建/启动时作为 CLI 使用，**不在 HTTP 请求路径上**；② 前端 2 个 moderate 来自 `vitest`（**仅开发期测试工具**，不进生产镜像，修复需破坏性升级）。两条豁免都写明了理由与复核时机，且**豁免消失时门禁会失败**提醒删除。另外 Dependabot 的**安全更新开关**（仓库设置项，不在配置文件里）需在交付时确认已启用。**接入当天 Dependabot 就开出了 PR，其中 `@nestjs/common` 那个 CI 红了 —— 门禁判对了**：它试图把 `@nestjs/common` 单独升到 12.x，而 `@nestjs/config` 的 peer 仍写着 `@nestjs/common ^10 || ^11`，`npm ci` 必然 ERESOLVE 失败（已本地复现）。据此把 `@nestjs/*` 分成一组并挡住其 major —— 框架主版本要等整个生态跟上才能升。单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互；跨层端到端行为由 `scripts/e2e.mjs` 覆盖（DEM-00~08 + DEM-11~16，已实跑 **93/93** 通过），并**已接入 CI**（`e2e` job，见上）。`docker compose up --build` 三容器一键启动、nginx 反代与命名卷挂载尚未实测（本机 Docker 引擎不可用）—— 这是当前门禁体系**最后一处空白**：`compose` job 只校验配置文件的语法与变量插值，并不真正起容器。**E3 的 nginx 改动因此只做了结构解析校验，语义未经验证** —— 若 `docker compose up` 后 `/api/` 返回 502，应优先检查该处（`resolver` + 变量式 `proxy_pass`）。DEM-09（停库降级为通用 500）与 DEM-10（重启后数据不丢）需要操作数据库进程，无法在 `e2e` job 内完成，仍属人工验证项（DEM-10 以「重启数据库进程」替代「容器重建」，未验证命名卷保留行为）。未做并发压测。前端组件测试为 SSR 渲染断言，不含 jsdom 点击交互模拟。
 
 ---
 

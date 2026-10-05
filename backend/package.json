@@ -12,6 +12,8 @@
     "prisma:generate": "prisma generate",
     "prisma:deploy": "prisma migrate deploy",
     "prisma:format": "prisma format",
+    "hooks:install": "node ../scripts/install-git-hooks.mjs",
+    "preflight": "node ../scripts/preflight.mjs",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.js\" \"../scripts/**/*.mjs\"",

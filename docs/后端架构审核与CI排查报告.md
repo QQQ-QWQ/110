@@ -486,7 +486,7 @@ if npx prisma migrate deploy; then ...
 | C1 | ✅ **已完成** | schema 格式门禁、`validate` 前置、`DATABASE_URL` 注入、CHECK 约束清单扩展至 15 条、job 超时。 | — |
 | C2 | **迁移漂移检测** | 在 `migrations` job（已有 postgres service）用 `prisma migrate diff --from-migrations ./prisma/migrations --to-schema-datamodel ./prisma/schema.prisma --shadow-database-url <复用 service 的第二个库> --exit-code`。 | 这是**最能防止「schema 与迁移悄悄不一致」**的检查，恰好针对本架构「手写 SQL + schema 双真相」的结构性风险。代价：需要 shadow 库，且 `migrate diff` 对 `--from-migrations` 会重放全部迁移，增加 CI 时间（估 +30~60s）。 |
 | C3 | ✅ **已落地** | `scripts/check-migrations-immutable.mjs` + `migrations` job 的一个步骤。判定规则刻意选最简的一条：`M`（修改）/`D`（删除）→ 违规；`A`（新增）→ 放行（新增正是迁移的工作方式）。用 `--no-renames` 把重命名拆成 A+D，于是重命名被 D 拦住。 | 需要与基准提交比对，因此该 job 的 checkout 加了 `fetch-depth: 0`。基准取法：PR 用 `base.sha`，push 用 `event.before`。**首次推送的 `before` 是全零 SHA** → 脚本**显式打印原因并跳过**（跳过 ≠ 通过，绝不静默放行）。代价：浅克隆改全量克隆，checkout 略慢。 |
-| C4 | ✅ **已落地** | `scripts/preflight.mjs`：一键复跑 CI 的机械检查。**并且 CI 的 `hygiene` job 直接调用它**（`--mechanical`），于是「本地 preflight 绿」与「CI hygiene 绿」是同一件事，不存在两套会漂移的检查。 | 把反馈周期从 3~5 分钟压到 **1 秒**。代价有两处，都已记录：① 这些检查在 CI 里合并成了一个步骤，粒度不如从前 —— 但这正是该脚本的意义（拿不到日志时本地跑一遍就能定位）；② 需要开发者记得跑，用 `pre-push` 钩子可强制，但钩子可被 `--no-verify` 绕过（设计使然，不是缺陷）。 |
+| C4 | ✅ **已落地** | `scripts/preflight.mjs`：一键复跑 CI 的机械检查。**并且 CI 的 `hygiene` job 直接调用它**（`--mechanical`），于是「本地 preflight 绿」与「CI hygiene 绿」是同一件事，不存在两套会漂移的检查。**「记得跑」也已解决**：`scripts/install-git-hooks.mjs` 安装 pre-push 钩子，推送前自动执行。 | 把反馈周期从 3~5 分钟压到 **1 秒**。代价有两处，都已记录：① 这些检查在 CI 里合并成了一个步骤，粒度不如从前 —— 但这正是该脚本的意义（拿不到日志时本地跑一遍就能定位）；② 钩子可被 `--no-verify` 绕过（设计使然，不是缺陷 —— 钩子只是第一道防线，真正的门禁仍在 CI）。选 pre-push 而非 pre-commit：preflight 要跑 Prettier 与 Prisma，放在 pre-commit 会让人想关掉它。 |
 | C5 | ✅ **已落地（文档项）** | `docs/代码审查标准与流程.md` §6.3.1 明确 `main` 的 **6 个 required status checks**（与 `ci.yml` 的 6 个 job 一一对应）、以及「Require branches to be up to date」「禁止绕过」「禁止 force push」等配套约束。 | 仓库内的文档**无法**强制 GitHub 侧配置，这一点在文中如实标注了（「验收时需当场核对，不能『文档写了就算做了』」）。之所以仍要做：把「已配置分支保护」写成验收项，能确保它不被遗忘。另外文档里写清了「为什么恰好是这 6 个」—— required checks 多写一个不存在的名字会让 PR 永久卡住。 |
 | **C6** | ✅ **已落地**（**本轮新增，优先级最高**） | 新增 `e2e` job：postgres service → `prisma generate` + `migrate deploy` → `npm run build` → `node dist/seed.js` → 种子完整性断言 → `node dist/main.js` 等就绪 → `node scripts/e2e.mjs`（DEM-00~08 + DEM-11~16，93 项断言）。 | **这是唯一能拦住「跨层缺陷」的检查。** 见下方说明 —— 它的必要性已由本轮实跑直接证明。 |
 
@@ -583,7 +583,7 @@ if npx prisma migrate deploy; then ...
 
 | 项 | 状态 |
 |---|---|
-| **C4 本地前置检查** | ✅ **已完成** —— `scripts/preflight.mjs`（8 项检查）；CI 的 `hygiene` job 改为**直接调用它**，本地与 CI 同源。6 项负例验证见 §7.1 |
+| **C4 本地前置检查** | ✅ **已完成** —— `scripts/preflight.mjs`（8 项检查）；CI 的 `hygiene` job 改为**直接调用它**，本地与 CI 同源；`scripts/install-git-hooks.mjs` 把「记得跑」变成「自动跑」（pre-push 钩子）。6 项负例验证见 §7.1 |
 | **S5 request-id 贯穿日志** | ✅ **已完成** —— `core/request-id.ts`（中间件 + 访问日志）+ 异常过滤器回传编号；单测 12 条 + e2e DEM-12 共 5 项断言，见 §7.2 |
 | **E2 详情/历史分页** | ✅ **已完成** —— 详情的事件与提交加上界并回传总数/`hasMore`；`/history` 按 `seq` 游标分页；单测 7 条 + e2e DEM-13 共 18 项断言，见 §7.3 |
 | **E4 登录并发闸门** | ✅ **已完成** —— 信号量只罩 `bcrypt.compare`；饱和 → 503 + `Retry-After`；单测 12 条 + e2e DEM-14 共 3 项断言，见 §7.4（**饱和路径只有单测覆盖，原因见该节**） |
@@ -634,6 +634,7 @@ if npx prisma migrate deploy; then ...
 | E1 端到端验证 | `node scripts/e2e.mjs` → **93 项断言 0 失败**（含 DEM-11 12 + DEM-12 5 + DEM-13 18 + DEM-14 3 + DEM-15 5 + DEM-16 6） |
 | C4 preflight 全绿 | `node scripts/preflight.mjs` → **8/8 通过**（机械层 5 项 + 工具层 3 项） |
 | C4 preflight 负例验证 | 逐项制造违规，**6/6 均被检出**（退出码 1，且只有该项报红）—— 矩阵见 §7.1 |
+| C4 pre-push 钩子 | `node scripts/install-git-hooks.mjs` → 安装 `.git/hooks/pre-push`（0o755）。`--check` 未安装时退出 1；安装后退出 0。**负例**：临时 `git add` 一个 CRLF 的 `.sh` → 钩子退出 1 并打印修法；清理后钩子退出 0 |
 | S5 请求编号单测 | `backend/test/request-id.test.js` 12 条（含「换行/控制字符必须被拒绝」与「5xx 响应体带 requestId、4xx 不带」） |
 | S5 请求编号端到端 | `node scripts/e2e.mjs` → DEM-12 共 5 项断言（响应头始终回传、合法入参原样透传、含空格/超长入参被丢弃、4xx 响应体不带编号） |
 | S5 透传确实落到日志 | 服务端日志出现 `[HTTP] GET /api/requirements → 200 4.5ms rid=e2e-muv03wsv-rid` —— 客户端传入的编号被原样沿用，这正是「用户报编号 → 管理员 grep 日志」能成立的前提 |

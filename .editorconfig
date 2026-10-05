@@ -1,0 +1,50 @@
+# ============================================================
+# EditorConfig —— 代码审查标准 §6.2 L1 层（编辑器级门禁）
+#
+# 作用：让所有编辑器/IDE 自动统一缩进、行尾、编码。
+# 目的：把「风格」从人工审查中彻底移除 —— 人不该在评审里讨论空格。
+# ============================================================
+
+root = true
+
+# ---------- 全局默认 ----------
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+max_line_length = 100
+
+# ---------- Markdown：保留行尾空格（换行语义） ----------
+[*.md]
+trim_trailing_whitespace = false
+
+# ---------- 容器与脚本：必须是 LF ----------
+# CRLF 会导致 Linux 容器内报 $'\r': command not found
+[*.sh]
+end_of_line = lf
+
+[Dockerfile]
+end_of_line = lf
+indent_size = 4
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.conf]
+end_of_line = lf
+indent_size = 4
+
+# ---------- SQL 迁移：手工编写，保持 4 空格缩进便于逐行审查 ----------
+[*.sql]
+indent_size = 4
+
+# ---------- 前端 ----------
+[*.{vue,ts,js,css,html}]
+indent_size = 2
+
+# ---------- 依赖锁文件：不手工编辑，不做格式约束 ----------
+[package-lock.json]
+insert_final_newline = false

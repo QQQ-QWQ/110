@@ -1,0 +1,41 @@
+# ============================================================
+# CODEOWNERS —— 代码审查标准 §2.2「领域负责人终审」
+#
+# 作用：PR 触及下列路径时，自动指派对应负责人，并触发「必须由该负责人批准」的规则。
+#
+# ⚠️ 使用前请替换为团队真实账号或团队名（格式：@用户名 或 @组织/团队名）。
+#    未成为仓库协作者的用户无法被指派，规则会静默失效。
+#
+# 语法：<路径模式>  <负责人1> <负责人2> ...
+#       越靠后的规则优先级越高
+# ============================================================
+
+# ---------- 默认负责人（所有文件的兜底） ----------
+*                       @QQQ-QWQ
+
+# ---------- 高危区域：必须由领域负责人终审 ----------
+
+# 数据库迁移 —— 改错会丢数据，最高风险
+/backend/prisma/        @QQQ-QWQ
+
+# 权限判定 —— 改错会越权
+/backend/src/domain/policy.ts           @QQQ-QWQ
+
+# 状态机 —— 领域规则的唯一真相源
+/backend/src/domain/states.ts           @QQQ-QWQ
+
+# 幂等与并发 —— 改错会产生重复业务数据
+/backend/src/pipeline/                  @QQQ-QWQ
+
+# 会话与鉴权
+/backend/src/core/security/             @QQQ-QWQ
+
+# 容器编排与 CI —— 改错会导致一键启动失败
+/docker-compose.yml     @QQQ-QWQ
+/backend/Dockerfile     @QQQ-QWQ
+/frontend/Dockerfile    @QQQ-QWQ
+/frontend/nginx.conf    @QQQ-QWQ
+/.github/               @QQQ-QWQ
+
+# 审查标准本身 —— 由质量守护维护（§2.1）
+/docs/代码审查标准与流程.md   @QQQ-QWQ

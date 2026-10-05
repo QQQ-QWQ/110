@@ -1,54 +1,91 @@
 /* ============================================================
  * tokens.css —— 设计令牌（单一落点）
  *
- * 所有颜色 / 间距 / 圆角 / 阴影 / 层级 都只在这里定义，
- * 组件样式一律引用变量，禁止再写魔法值。
- * 需要换肤（如深色模式）时只改本文件即可。
+ * 所有颜色 / 间距 / 圆角 / 阴影 / 层级 / 时长 / 缓动 都只在这里定义，
+ * 组件样式一律引用变量，**禁止再写魔法值**。
+ *
+ * 本文件是《UI 设计方案》§4（配色）、§5（排版与节奏）、§8（动效）的**唯一落点**：
+ * 改这里就能改全站 —— 这也是「P1 只改一个文件就能看到全站变化」的检验方式。
+ *
+ * 三条纪律（对应方案 §4.2 / §5.3 / §8.1）：
+ *   1. **品牌色是唯一强调色**：同屏实心品牌元素 ≤ 2 处（通常是主按钮 + 一个选中态）
+ *   2. **颜色只用语义令牌**：组件里不写十六进制值，由 scripts/verify-design-tokens.mjs 强制
+ *   3. **时长与缓动只从下面这几组取**：不在组件里写裸 ms 或 cubic-bezier
+ *
+ * 深色模式预留：色板按「浅底 / 中描边 / 深字」的层级组织，
+ * 接入深色只需在本文件追加一份 `prefers-color-scheme: dark` 覆盖，组件零改动。
  * ============================================================ */
 
 :root {
-  /* ── 颜色：中性 ── */
-  --c-bg: #f5f7fa;
+  /* ───────── 画布与表面 ───────── */
+  --c-canvas: #f7f8fa;
   --c-surface: #ffffff;
-  --c-surface-2: #f8fafc;
-  --c-surface-3: #f1f5f9;
-  --c-border: #e3e8ef;
-  --c-border-strong: #cbd5e1;
-  --c-text: #1f2937;
-  --c-text-2: #374151;
-  --c-text-muted: #6b7280;
-  --c-text-faint: #9ca3af;
+  --c-sunken: #f1f3f6;
+  --c-inverse: #101828;
 
-  /* ── 颜色：语义 ── */
-  --c-primary: #2563eb;
-  --c-primary-dark: #1d4ed8;
-  --c-primary-soft: #eff6ff;
-  --c-primary-border: #bfdbfe;
+  /* ───────── 边框与焦点 ───────── */
+  --c-border-subtle: #eef0f3;
+  --c-border: #e2e5ea;
+  --c-border-strong: #cbd2da;
+  /* 统一焦点环：所有交互元素共用同一套，避免每个组件各写一个 rgba */
+  --c-ring: #2c5ce6;
 
-  --c-danger: #dc2626;
-  --c-danger-dark: #b91c1c;
-  --c-danger-soft: #fef2f2;
-  --c-danger-border: #fecaca;
+  /* ───────── 文本层级（四级）───────── */
+  --c-text-strong: #101828;
+  --c-text: #344054;
+  --c-text-muted: #667085;
+  --c-text-faint: #98a2b3;
+  /* 深色底上的文字（品牌按钮、Toast、品牌标记） */
+  --c-on-brand: #ffffff;
 
-  --c-warn: #b45309;
-  --c-warn-soft: #fffbeb;
+  /* ───────── 品牌色（唯一强调色）───────── */
+  --c-brand: #2c5ce6;
+  --c-brand-hover: #2449b8;
+  --c-brand-soft: #eef3ff;
+  --c-brand-border: #c7d7fe;
+  /* 品牌标记的渐变终点。方案 §4.2 允许品牌标记保留渐变（全站仅此一处 + 骨架屏） */
+  --c-brand-deep: #4f46e5;
+
+  /* ───────── 功能色（各自配 soft 底与 border）───────── */
+  --c-danger: #b42318;
+  --c-danger-hover: #912018;
+  --c-danger-soft: #fef3f2;
+  --c-danger-border: #fecdca;
+
+  --c-warn: #b54708;
+  --c-warn-soft: #fffaeb;
   --c-warn-border: #fde68a;
 
-  --c-ok: #047857;
-  --c-ok-soft: #ecfdf5;
-  --c-ok-border: #a7f3d0;
+  --c-success: #067647;
+  --c-success-soft: #ecfdf3;
+  --c-success-border: #a6f4c5;
 
-  /* ── 状态色（四态徽标）── */
-  --c-state-pending-bg: #f1f5f9;
-  --c-state-pending-fg: #475569;
-  --c-state-progress-bg: var(--c-warn-soft);
-  --c-state-progress-fg: var(--c-warn);
-  --c-state-review-bg: var(--c-primary-soft);
-  --c-state-review-fg: var(--c-primary-dark);
-  --c-state-done-bg: var(--c-ok-soft);
-  --c-state-done-fg: var(--c-ok);
+  /* ───────── 四态语义色（业务状态，**不是**强调色）─────────
+     每组三件套：字 / 底 / 描边，与方案 §4.1 的表格一一对应。
+     纪律：状态色只用于状态，不得用于装饰；反之状态徽标必须用这四组。 */
+  --c-pending: #475467;
+  --c-pending-soft: #f2f4f7;
+  --c-pending-border: #e4e7ec;
 
-  /* ── 间距刻度（4px 基数）── */
+  --c-progress: #b54708;
+  --c-progress-soft: #fffaeb;
+  --c-progress-border: #fde68a;
+
+  --c-review: #2449b8;
+  --c-review-soft: #eef3ff;
+  --c-review-border: #c7d7fe;
+
+  --c-done: #067647;
+  --c-done-soft: #ecfdf3;
+  --c-done-border: #a6f4c5;
+
+  /* ───────── 浮层 ───────── */
+  /* 弹窗遮罩：独立令牌，避免每个浮层各写一个 rgba */
+  --c-overlay: rgba(16, 24, 40, 0.45);
+  /* 深色底上的「轨道」色（加载指示器的底环） */
+  --c-track: rgba(255, 255, 255, 0.45);
+
+  /* ───────── 间距刻度（4px 基数）───────── */
   --sp-1: 4px;
   --sp-2: 8px;
   --sp-3: 12px;
@@ -59,24 +96,23 @@
   --sp-10: 40px;
   --sp-12: 48px;
 
-  /* ── 圆角 ── */
+  /* ───────── 圆角（收敛为三级 + pill）───────── */
   --r-sm: 6px;
   --r-md: 8px;
   --r-lg: 10px;
-  --r-xl: 12px;
   --r-pill: 999px;
 
-  /* ── 阴影 ── */
+  /* ───────── 阴影（只用两档 + 焦点环）───────── */
   --sh-1: 0 1px 2px rgba(16, 24, 40, 0.05), 0 1px 3px rgba(16, 24, 40, 0.06);
   --sh-2: 0 10px 30px rgba(16, 24, 40, 0.12);
-  --sh-focus: 0 0 0 3px rgba(37, 99, 235, 0.14);
+  --sh-focus: 0 0 0 3px rgba(44, 92, 230, 0.14);
 
-  /* ── 层级 ── */
+  /* ───────── 层级 ───────── */
   --z-topbar: 20;
   --z-overlay: 50;
   --z-toast: 80;
 
-  /* ── 尺寸 ── */
+  /* ───────── 尺寸 ───────── */
   --h-topbar: 56px;
   --h-control: 34px;
   --h-control-sm: 28px;
@@ -85,11 +121,18 @@
   /* 触控最小可点区域（移动端） */
   --tap-min: 44px;
 
-  /* ── 动效 ── */
-  --t-fast: 0.12s;
-  --t-base: 0.2s;
+  /* ───────── 动效：三级时长 ─────────
+     只允许这三档。组件里出现裸 ms 就是漏了令牌 —— 由 verify-design-tokens 强制。 */
+  --dur-1: 120ms; /* 微反馈：悬停、按压、焦点环 */
+  --dur-2: 200ms; /* 组件状态：展开、徽标、进度条、Toast */
+  --dur-3: 320ms; /* 布局与浮层：弹窗、抽屉、列表重排 */
 
-  /* ── 字体 ── */
+  /* ───────── 动效：三条缓动 ───────── */
+  --ease-in: cubic-bezier(0.16, 1, 0.3, 1); /* 进入：元素出现、面板展开 */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1); /* 标准：颜色、尺寸、进度等状态切换 */
+  --ease-out: cubic-bezier(0.4, 0, 1, 1); /* 退出：元素消失、面板收起 */
+
+  /* ───────── 字体 ───────── */
   --font-sans:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', Roboto, sans-serif;

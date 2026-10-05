@@ -191,6 +191,7 @@ docker compose up --build
 │   ├── verify-entrypoint.mjs   # 用假 npx 驱动真实 entrypoint，验证故障分流（S4，CI backend job 调用）
 │   ├── install-git-hooks.mjs   # 安装 pre-push 钩子，让「记得跑 preflight」变成「自动跑」（C4 收尾）
 │   ├── check-audit.mjs         # 依赖漏洞扫描：阻断 high/critical，允许显式且有日期的例外（P3）
+│   ├── verify-design-tokens.mjs # 设计令牌与用色纪律（UI 方案 §10.3，CI frontend job 调用）
 │   ├── e2e.mjs                 # 端到端验证脚本（DEM-01~08 + DEM-11~16，一条命令产出对照表）
 │   └── verify-retention.mjs    # 数据保留清理的真实库验证（S1）
 │
@@ -224,6 +225,7 @@ docker compose up --build
 | 层 | 选型 | 说明 |
 | --- | --- | --- |
 | 前端 | Vue 3 + TypeScript + Vite | 轻量、构建快；产物为纯静态文件 |
+| 前端样式 | 原生 CSS + **设计令牌单一落点** | 零 UI 框架依赖；令牌与用色纪律由 `scripts/verify-design-tokens.mjs` 在 CI 强制（见 `docs/UI设计方案.md`） |
 | 后端 | NestJS 11（Express）+ TypeScript | 模块化分层清晰，与前端共用同一语言 |
 | ORM | Prisma 6 | 迁移可审阅；复杂约束用**手写 SQL** 补充 |
 | 数据库 | PostgreSQL 16 | 事务 + `CHECK` 约束，把不变量下沉到存储层 |
@@ -311,7 +313,7 @@ node scripts/install-git-hooks.mjs --check   # 检查是否已安装
 | --- | --- | --- | --- |
 | L1 编辑器 | 保存时 | 统一缩进/行尾/编码 | `.editorconfig` |
 | L2 版本控制 | 克隆/提交时 | 强制 LF，防止容器脚本被 CRLF 破坏 | `.gitattributes` |
-| L3 CI | 开 PR 时 | 格式检查 + 静态检查 + 单元测试 + 后端构建 / Prisma schema 校验与格式规范 + **entrypoint 故障分流验证** + **依赖漏洞扫描** + 前端类型检查/构建 + 迁移可回放（空库重放 + 15 条 CHECK 约束核验）+ **迁移漂移检测（schema ↔ migrations 一致性）** + **已应用迁移不可修改检测** + **端到端（起真实服务 + 跑 DEM-00~08、DEM-11~16 共 93 项断言 + 数据保留清理验证）** + 仓库卫生（行尾/密钥/构建产物/lockfile） | `.github/workflows/ci.yml` |
+| L3 CI | 开 PR 时 | 格式检查 + 静态检查 + 单元测试 + 后端构建 / Prisma schema 校验与格式规范 + **entrypoint 故障分流验证** + **依赖漏洞扫描** + 前端类型检查/构建 + **设计令牌与用色纪律** + 迁移可回放（空库重放 + 15 条 CHECK 约束核验）+ **迁移漂移检测（schema ↔ migrations 一致性）** + **已应用迁移不可修改检测** + **端到端（起真实服务 + 跑 DEM-00~08、DEM-11~16 共 93 项断言 + 数据保留清理验证）** + 仓库卫生（行尾/密钥/构建产物/lockfile） | `.github/workflows/ci.yml` |
 | L4 人工 | PR 审查 | 正确性、安全、并发、可读性、测试覆盖（风格已由 L1~L3 覆盖，不占用人工带宽） | `.github/PULL_REQUEST_TEMPLATE.md`、`.github/CODEOWNERS` |
 
 **自动化质量门禁现状**

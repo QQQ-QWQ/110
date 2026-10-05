@@ -12,7 +12,7 @@ html,
 body {
   margin: 0;
   padding: 0;
-  background: var(--c-bg);
+  background: var(--c-canvas);
   color: var(--c-text);
   font-family: var(--font-sans);
   font-size: 14px;
@@ -33,6 +33,9 @@ h4 {
   margin: 0;
   font-weight: 600;
   line-height: 1.35;
+  /* 四级文本层级的顶层：标题用 --c-text-strong，正文用 --c-text。
+     不区分这两级时，整页的层级只剩字号一种手段（方案 §6.1）。 */
+  color: var(--c-text-strong);
 }
 
 p {
@@ -40,7 +43,7 @@ p {
 }
 
 a {
-  color: var(--c-primary);
+  color: var(--c-brand);
   text-decoration: none;
 }
 a:hover {
@@ -68,7 +71,7 @@ ol {
 
 /* 统一焦点样式：只在键盘导航时出现，鼠标点击不出现 */
 :focus-visible {
-  outline: 2px solid var(--c-primary);
+  outline: 2px solid var(--c-brand);
   outline-offset: 2px;
   border-radius: var(--r-sm);
 }
@@ -93,10 +96,10 @@ ol {
   top: -60px;
   z-index: 100;
   padding: var(--sp-2) var(--sp-4);
-  background: var(--c-primary);
-  color: #fff;
+  background: var(--c-brand);
+  color: var(--c-on-brand);
   border-radius: var(--r-md);
-  transition: top var(--t-fast);
+  transition: top var(--dur-1);
 }
 .skip-link:focus {
   top: var(--sp-2);

@@ -12,9 +12,9 @@
 |---|---|
 | **CI 为何持续失败** | **两个独立根因**，而非 5 个 job 各自的问题：① `schema.prisma` 的 `@relation` 属性跨行书写，Prisma 解析器不支持 → 同时打红「后端」与「迁移可回放性」两个 job；② 「后端」job 的 `prisma validate` 步骤缺 `DATABASE_URL` → 即使修好①该步骤仍会红。 |
 | **当前状态** | **已修复并验证**：commit `603cedc` 推送后 CI 由「4 次全红」转绿，此后**连续全绿**。最新 run（`a37b53d`）为 **6 个 job、69 个步骤全部 success**（唯一 skipped 的是 `if: failure()` 的日志步骤，按设计跳过）。期间只有一次失败：2026-10-05 的 `--force-with-lease` 触发了 C3 门禁（`event.before` 被历史改写后不可达）——**那是刻意保留的正确行为**，见 §7.6。 |
-| **可扩展性** | 读路径曾有 **2 处会随数据量线性恶化**的无界查询（列表无分页、详情含无界事件流）—— **两处均已修复**（E1 键集分页 / E2 详情与历史分页）；横向扩展曾有 **2 个硬阻塞**（`container_name` 阻断 `--scale`、nginx 不在运行时重解析 DNS）—— 已解除（E3，其中 nginx 部分仅结构校验）。写路径（乐观锁 + 幂等）本身是可横向扩展的。 |
-| **稳定性** | 核心写路径的事务/幂等/乐观锁设计是**扎实的**；主要缺口在**运维面**：幂等记录与会话过期行无清理（无界增长）、连接池与语句超时未显式配置、无 request-id 关联日志、`web` 未等服务健康即启动、liveness 与 readiness 混为一谈。**前三项已修复**（S1 / S2 / S5），后两项也已落地（S3 / S6，见 §6，其中 S3 仅结构校验）。**登录路径另加两道防护**：并发闸门（E4，容量 → 503）与失败限流（S7，配额 → 429）。 |
-| **最高优先级动作** | **P0 共 6 项已全部落地**（见 §6）：CI 起服务跑 e2e、列表游标分页、数据保留清理、连接池与超时、解除横向扩展阻塞、迁移漂移检测。5 项有自动化验证（单测 / 真实数据库 / e2e / CI）；**唯一例外是 E3 的 nginx 改动**，只做了结构解析校验（本环境无 Docker 引擎与 nginx 二进制）。**P1 已全部落地**：C4 本地前置检查（§7.1）、S5 请求编号贯穿日志（§7.2）、E2 详情/历史分页（§7.3）、E4 登录并发闸门（§7.4）、S3 `web` 等服务健康（仅结构校验）、S4 entrypoint 错误可诊断（§7.8）。**P2 已完成四项**：S6 liveness/readiness 拆分（§7.5，有停库实测）、C3 已应用迁移不可修改（§7.6，双向本地验证）、C5 分支保护声明（§6.3.1，文档项）、S7 登录限流（§7.7，有手工确认的 429 响应）。**P3 依赖漏洞扫描也已完成**，并**发现并处理了 5 个真实漏洞**（3 high + 2 moderate，见 §7.9）。**唯一不建议做的是 E5 会话缓存** —— 它与「登出即时失效」直接冲突。 |
+| **可扩展性** | 读路径曾有 **2 处会随数据量线性恶化**的无界查询（列表无分页、详情含无界事件流）—— **两处均已修复**（E1 键集分页 / E2 详情与历史分页）；横向扩展曾有 **2 个硬阻塞**（`container_name` 阻断 `--scale`、nginx 不在运行时重解析 DNS）—— 已解除（E3，nginx 语义已于 2026-10-05 用真实 Docker 引擎实测，见 §7.10）。写路径（乐观锁 + 幂等）本身是可横向扩展的。 |
+| **稳定性** | 核心写路径的事务/幂等/乐观锁设计是**扎实的**；主要缺口在**运维面**：幂等记录与会话过期行无清理（无界增长）、连接池与语句超时未显式配置、无 request-id 关联日志、`web` 未等服务健康即启动、liveness 与 readiness 混为一谈。**前三项已修复**（S1 / S2 / S5），后两项也已落地（S3 / S6，见 §6；两者的语义均已于 2026-10-05 在真实容器里实测，见 §7.10）。**登录路径另加两道防护**：并发闸门（E4，容量 → 503）与失败限流（S7，配额 → 429）。 |
+| **最高优先级动作** | **P0 共 6 项已全部落地**（见 §6）：CI 起服务跑 e2e、列表游标分页、数据保留清理、连接池与超时、解除横向扩展阻塞、迁移漂移检测 —— **6 项全部有实测验证**（含 E3 的 nginx 语义，2026-10-05 用真实 Docker 引擎补上，见 §7.10）。**P1 已全部落地**：C4 本地前置检查（§7.1）、S5 请求编号贯穿日志（§7.2）、E2 详情/历史分页（§7.3）、E4 登录并发闸门（§7.4，含真实饱和实测）、S3 `web` 等服务健康（§7.10 实测 502 出现 0 次）、S4 entrypoint 错误可诊断（§7.8）。**P2 已完成四项**：S6 liveness/readiness 拆分（§7.5，有停库实测）、C3 已应用迁移不可修改（§7.6，双向本地验证）、C5 分支保护声明（§6.3.1，文档项）、S7 登录限流（§7.7，有手工确认的 429 响应）。**P3 依赖漏洞扫描也已完成**，并**发现并处理了 5 个真实漏洞**（3 high + 2 moderate，见 §7.9）。**唯一不建议做的是 E5 会话缓存** —— 它与「登出即时失效」直接冲突。 |
 
 ---
 
@@ -463,7 +463,7 @@ if npx prisma migrate deploy; then ...
 |---|---|---|---|
 | E1 | **列表游标分页** | `list()` 增加 `limit`（默认 20，上限 100）+ `cursor`（`createdAt + id` 复合游标）。返回 `nextCursor`。 | 游标分页（而非 `offset`）在数据持续写入时不会跳行/重行；代价是前端不能直接跳页。对「按时间倒序的协作列表」这一场景，游标是正确选择。 |
 | E2 | ✅ **已落地** | `detail()` 的 `events` / `submissions` 加上界（事件默认最近 50、上限 200，可用 `?eventsLimit=` 调；提交固定最近 20），并回传 `eventsTotal` / `eventsHasMore` / `eventsLimit` 与 `submissionsTotal` / `submissionsHasMore`；完整时间线走 `/history`，按事件的 `seq` 游标分页。 | 详情页首屏只加载最近 N 条，历史按需拉取 —— 详情响应因此**有上界**。游标选 `seq` 而非 `(createdAt, id)`：单调整数天然有序，不存在同毫秒的稳定性问题。代价是前端多一次请求；另外前端要如实显示「这是最近 N 条，共 M 条」，不能把截断藏起来。 |
-| E3 | **解除横向扩展阻塞** | 删 `container_name`；nginx 加 `resolver 127.0.0.11 valid=10s` + 变量式 `proxy_pass`。 | 见 3.2：新副本纳入流量最多延迟 10s。对本题规模可接受。 |
+| E3 | ✅ **已落地（含语义实测）** | 删 `container_name`；nginx 加 `resolver 127.0.0.11 valid=10s` + 变量式 `proxy_pass`。 | 见 3.2：新副本纳入流量最多延迟 10s。对本题规模可接受。**2026-10-05 用真实 Docker 引擎补测**：`--scale api=2` 成功（无 `container name is already in use`），且 12 个请求按日志分发到两个实例（7 / 5）—— **负载均衡确实生效**；经 nginx 的 `/api` 返回 200 而非 502。见 §7.10。 |
 | E4 | ✅ **已落地** | `domain/semaphore.ts`（纯逻辑信号量）+ `core/login-gate.ts`（读配置 + 记日志）；`AuthService.login()` 用闸门**只罩住 `bcrypt.compare` 那一段**。默认并发取 `os.availableParallelism()`，队列上限 50，排队超时 5s；队列满或排队超时 → **503 + `Retry-After`**。 | 见 3.4：把 CPU 争用的故障域从「整个 API」收窄到「登录」。三处取舍：① 只罩密码校验（数据库查询是便宜 I/O 且有连接池兜底，多罩一层只降低吞吐）；② 排队**必须有上限**（无限排队只是把问题从 CPU 挪到内存）；③ 释放时许可**直接交给队首**（FIFO，否则等待时间不可预期）。用 `availableParallelism()` 而非 `cpus().length` —— 容器里后者返回宿主机核数，会把闸门开到超过实际算力。 |
 | E5 | **会话读取缓存（可选，需权衡）** | 进程内 LRU 缓存会话解析结果，TTL ≤ 30s；失效由 `lastSeenAt` 节流写回兜底。 | ⚠️ **这项建议与「登出即时失效」直接冲突**：多副本下，副本 B 的缓存不知道副本 A 上发生的登出，登出延迟最长 = TTL。当前架构刻意用「服务端会话表」换即时失效（`session.service.ts` 的注释明确说明了这一点）。**若严格保留该语义，则不应做这项缓存。** 建议：先做 E1~E4，用压测确认 `session` 查询真的是瓶颈后再决定；若做，TTL 应压到 ≤ 5s 并接受「登出最长 5 秒后完全生效」。 |
 
@@ -473,7 +473,7 @@ if npx prisma migrate deploy; then ...
 |---|---|---|---|
 | S1 | **定时清理任务** | 应用内定时任务（`@nestjs/schedule` 或 `setInterval`）：删除 24h 前 `status='COMPLETED'` 的幂等记录、`expires_at < now()` 的会话；对长期滞留的 `PROCESSING` 记录单独告警。 | 必须**保留 `PROCESSING` 记录**（见 4.2-①）。多副本下定时任务会重复执行 —— 用 `DELETE ... WHERE ...` 的幂等性天然容忍（不会出错，只是浪费一次查询），无需分布式锁。 |
 | S2 | ✅ **已落地** — 连接池与超时显式化 | `DATABASE_URL` 加 `connection_limit` / `pool_timeout`；通过 libpq `options` 设置 `statement_timeout`。 | 见 4.2-③：`statement_timeout` 需按实际数据量调参，过短会误杀正常慢查询。当前取 10s（先宽松）。 |
-| S3 | ✅ **已落地**（**仅结构校验**） | `docker-compose.yml` 的 `web.depends_on` 由简写 `- api` 改为 `api: condition: service_healthy`。`api` 的 HEALTHCHECK 定义在 `backend/Dockerfile`（`node -e fetch` 探 `/api/health/ready`），因此它真的会探数据库。 | 见 4.2-④：`web` 启动被推迟，换取无 502 窗口。简写形式只保证「容器已创建」，nginx 仍可能在 api 就绪前接流量 → 首页可用但 `/api` 502，一个只在启动窗口出现、之后自愈的故障，排查时最容易被归因成「网络问题」。⚠️ **本环境无 Docker 引擎，只做了 `docker-compose config` 结构校验**，未真正起容器验证。 |
+| S3 | ✅ **已落地（含语义实测）** | `docker-compose.yml` 的 `web.depends_on` 由简写 `- api` 改为 `api: condition: service_healthy`。`api` 的 HEALTHCHECK 定义在 `backend/Dockerfile`（`node -e fetch` 探 `/api/health/ready`），因此它真的会探数据库。 | 见 4.2-④：`web` 启动被推迟，换取无 502 窗口。简写形式只保证「容器已创建」，nginx 仍可能在 api 就绪前接流量 → 首页可用但 `/api` 502，一个只在启动窗口出现、之后自愈的故障，排查时最容易被归因成「网络问题」。**2026-10-05 实测**：`down` + `up` 期间以 0.4s 间隔轮询，状态码分布为 `200`×5、`000`（连接被拒）×4、**`502`×0** —— 机制与设计一致。见 §7.10。 |
 | S4 | ✅ **已落地** | `docker-entrypoint.sh` 改为**捕获** `migrate deploy` 的完整输出（原写法 `if npx prisma migrate deploy` 把 stderr 直接吞掉），并区分故障性质：**迁移类错误立即退出**，连接类错误才重试。完整错误在**首次与最后一次**打印全文，中间只留一行，避免刷满日志掩盖真正原因。 | 见 4.2-⑤。分类依据是 **stderr 文本匹配**（Prisma 只给 message、没有结构化错误码），因此刻意选**「不认识的一律重试」**兜底 —— 最坏情况退化成改造前的行为，而不会把「库还没起来」误判成「迁移有错」提前失败。⚠️ **验证限度**：用假 `npx` 驱动真实脚本覆盖了四种控制流（见 §7.8），但**「容器能不能起来」仍需 Docker 引擎**。 |
 | S5 | ✅ **已落地** | `core/request-id.ts`：中间件生成/透传 `X-Request-Id`（响应头始终回传），访问日志与异常过滤器输出该编号，**5xx 的响应体里也带上它**。 | 见 4.2-⑥：采用轻量版（只改过滤器与日志），**未**引入 AsyncLocalStorage / nestjs-cls —— 那要改动所有 service 的签名，而本项目没有跨多层异步的日志关联需求。透传的入参需通过安全校验（可见 ASCII、≤128 字符）：编号会进日志行，不加限制就是日志注入与日志撑爆两个口子。 |
 | S6 | ✅ **已落地** | `/api/health/live`（**不碰数据库**，只证明进程能响应）与 `/api/health/ready`（真实探测数据库，不可用 → **503** 而非 500）；`/api/health` 保留为 readiness 的别名。 | 见 4.2-⑦。**已实测**：停掉数据库后 `/health/live` 仍 200、`/health/ready` 与 `/health` 返回 503（见 §7.5）。这个差异不是形式主义 —— 把数据库检查放进 liveness，数据库一抖编排系统就会**重启进程**，而重启对「数据库不可用」毫无帮助，只会让恢复更慢。 |
@@ -576,7 +576,7 @@ if npx prisma migrate deploy; then ...
 | ✅ **E1 列表游标分页** | 新增 `domain/pagination.ts`（零依赖纯函数）；`requirements.service.ts` 改键集分页，`orderBy` 补决胜键 `id`；controller 加 `limit`/`cursor`；前端 `api.ts` + `ListView.vue` 加「加载更多」 | ✅ 单测 12 条（含**模拟翻页**：25 行大量同毫秒，逐页取完不重复不遗漏）；✅ e2e 新增 DEM-11 共 12 项断言全通过；✅ run #11（`d88e3b6`）该 job success |
 | ✅ **S1 数据保留清理** | 新增 `domain/retention.ts` + `core/maintenance.service.ts`；启动跑一次 + 周期跑，`unref` 不阻塞退出 | ✅ 单测 14 条（含 **where 子句 vs 判定函数一致性矩阵**）；✅ `scripts/verify-retention.mjs` 对真实库 5/5 通过（含「PROCESSING 超 100h 必须保留」） |
 | ✅ **S2 连接池与超时** | `.env.example` + `docker-compose.yml` 显式声明 `connection_limit` / `pool_timeout` / `statement_timeout` | ✅ 实测 `SHOW statement_timeout` 由 `0` 变 `10s`；`connection_limit=2` 确实改变并发行为；✅ `docker-compose config` 插值正确 |
-| ✅ **E3 解除横扩阻塞** | `docker-compose.yml` 移除 3 处 `container_name`；`nginx.conf` 改 `resolver` + 变量式 `proxy_pass` | ⚠️ **部分验证**：`container_name` 由 `docker-compose config` 确认移除；nginx 改动**只做了结构解析校验**（无 Docker 引擎、无 nginx 二进制，语义未执行） |
+| ✅ **E3 解除横扩阻塞** | `docker-compose.yml` 移除 3 处 `container_name`；`nginx.conf` 改 `resolver` + 变量式 `proxy_pass` | ✅ **已完整验证**（2026-10-05 补测）：`--scale api=2` 成功且无容器名冲突；12 个请求按日志分发到两实例（7 / 5），**负载均衡生效**；经 nginx 的 `/api` 返回 200 而非 502。见 §7.10 |
 | ✅ **C2 迁移漂移检测** | `migrations` job 新增 `prisma migrate diff --from-migrations --to-schema-datamodel --exit-code`，用退出码区分「漂移(2)」与「执行失败」 | ✅ 本地双向验证：无漂移 → 0；故意加字段 → 2 并打印 `[+] Added column`；✅ run #10 该步骤 success |
 
 ### P1 —— 应当做（稳定性运维面）
@@ -586,8 +586,8 @@ if npx prisma migrate deploy; then ...
 | **C4 本地前置检查** | ✅ **已完成** —— `scripts/preflight.mjs`（8 项检查）；CI 的 `hygiene` job 改为**直接调用它**，本地与 CI 同源；`scripts/install-git-hooks.mjs` 把「记得跑」变成「自动跑」（pre-push 钩子）。6 项负例验证见 §7.1 |
 | **S5 request-id 贯穿日志** | ✅ **已完成** —— `core/request-id.ts`（中间件 + 访问日志）+ 异常过滤器回传编号；单测 12 条 + e2e DEM-12 共 5 项断言，见 §7.2 |
 | **E2 详情/历史分页** | ✅ **已完成** —— 详情的事件与提交加上界并回传总数/`hasMore`；`/history` 按 `seq` 游标分页；单测 7 条 + e2e DEM-13 共 18 项断言，见 §7.3 |
-| **E4 登录并发闸门** | ✅ **已完成** —— 信号量只罩 `bcrypt.compare`；饱和 → 503 + `Retry-After`；单测 12 条 + e2e DEM-14 共 3 项断言，见 §7.4（**饱和路径只有单测覆盖，原因见该节**） |
-| **S3 `web` 等 `api` 健康** | ✅ **已完成（仅结构校验）** —— `web.depends_on` 改为 `condition: service_healthy`；`api` 的 HEALTHCHECK 探 `/api/health/ready`。⚠️ 本环境无 Docker 引擎，只做了 `docker-compose config` 校验 |
+| **E4 登录并发闸门** | ✅ **已完成** —— 信号量只罩 `bcrypt.compare`；饱和 → 503 + `Retry-After`；单测 12 条 + e2e DEM-14 共 3 项断言，见 §7.4（饱和路径已于 §7.10 用真实并发实测） |
+| **S3 `web` 等 `api` 健康** | ✅ **已完成并实测** —— `web.depends_on` 改为 `condition: service_healthy`；`api` 的 HEALTHCHECK 探 `/api/health/ready`。**2026-10-05 实测**：启动期间 `502` 出现 **0 次**（`200`×5、连接被拒×4），机制与设计一致，见 §7.10 |
 | **S4 entrypoint 错误可诊断** | ✅ **已完成** —— 捕获并打印 `migrate deploy` 完整输出；迁移类错误立即退出、连接类才重试；新增 `scripts/verify-entrypoint.mjs` 用假 `npx` 驱动真实脚本覆盖四种控制流，见 §7.8 |
 
 ### P2 —— 可延后（当前规模收益有限）
@@ -643,10 +643,15 @@ if npx prisma migrate deploy; then ...
 | E4 闸门单测 | `backend/test/semaphore.test.js` 12 条：并发数不被突破、**队列满 → 立即 503**、**排队超时 → 503 且必须出队**（否则队列泄漏到所有人被 503）、**FIFO**、抛错也释放许可、多余 release 不撑大池子、配置非法即抛错 |
 | E4 HTTP 映射 | `backend/test/request-id.test.js`：`Errors.overloaded()` → **503 + `Retry-After: 1`**；500 不带 `Retry-After`（重试不一定有用） |
 | E4 端到端 | e2e DEM-14 共 3 项：8 次并发登录全部 200、**每次得到独立会话**、突发之后仍能登录（许可未泄漏） |
-| E4 饱和路径 | ⚠️ **仅单测覆盖** —— 本环境无法做真实的饱和实验（沙箱内 PostgreSQL 在并发登录下反复崩溃），详见 §7.4 |
+| E4 饱和路径 | ✅ **已实测**（2026-10-05，Docker 引擎可用后补上）—— 绕过 nginx 直连 api 发 150 真并发：**503 × 145 + 401 × 5**（5 = 并发 2 + 队列 3），带 `Retry-After: 1`，压测后服务仍 200。工具 `scripts/probe-login-saturation.mjs`，详见 §7.10 |
 | S6 探针拆分（停库实测） | ✅ 停掉数据库后：`/health/live` → **200**，`/health/ready` → **503** `{"database":"unreachable"}`，`/health`（别名）→ **503**；恢复数据库并重启应用后 → 200 |
 | S6 单测 | `backend/test/health.test.js` 4 条：**liveness 绝不查数据库**、readiness 可用 → 200、不可用 → 503 且不泄露细节、`/health` 与 readiness 同语义 |
-| S3 compose 结构校验 | `docker-compose config` → 退出码 0，`web.depends_on.api.condition: service_healthy`；`container_name` 计数 0。⚠️ 未起容器验证 |
+| S3 compose 结构校验 | `docker-compose config` → 退出码 0，`web.depends_on.api.condition: service_healthy`；`container_name` 计数 0 |
+| **S3 compose 语义实测** | `docker compose up --build` → db/api/web **全部 healthy**，启动顺序正确；`down` + `up` 期间轮询：`200`×5、`000`×4、**`502`×0** |
+| **E3 横向扩展实测** | `--scale api=2` 成功（无 `container name is already in use`）；12 个请求按容器日志分发到两实例（7 / 5），**负载均衡生效**；经 nginx 的 `/api` 返回 **200**（非 502） |
+| **DEM-10 数据持久化实测** | `docker compose down` + `up` 后 app_user/requirement/event = **3 / 5 / 16 不变**；命名卷 `da-pgdata` 保留；复跑 e2e 仍 **93/93** |
+| **E4 真实饱和实测** | 绕过 nginx 直连 api，150 真并发 → **503 × 145 + 401 × 5**（5 = 并发 2 + 队列 3）；`Retry-After: 1`；压测后 `/health/live` 仍 200。工具：`scripts/probe-login-saturation.mjs` |
+| **完整端到端（经真实 nginx）** | `node scripts/e2e.mjs http://localhost:8080/api` → **93 项断言、0 失败** |
 | S4 entrypoint 分流 | `node scripts/verify-entrypoint.mjs` → **17 项断言全通过**：连接类重试到上限 / 迁移类**立即失败不重试** / 一次成功 / 先失败后成功。已接入 CI 的 backend job |
 | P3 依赖漏洞扫描 | `node scripts/check-audit.mjs` → 后端 3 high（同一公告，影响链 `deepmerge-ts → @prisma/config → prisma`）**已豁免**；前端 2 moderate（低于阻断线）。双向负例已验证：删掉豁免 → 报「未豁免」退出 1；加一条假豁免 → 报「白名单已过期」退出 1 |
 | C3 已应用迁移检测（双向） | 本地用临时分支实测：**改** `0001_init/migration.sql` → 退出码 1 并打印原因；**新增** `0003_probe/` 目录 → 退出码 0 且列为「新增（允许）」。三种跳过情形在本地显式打印原因并退出 0；**在 CI 下「拿不到基准」改为退出 2**（门禁等于没接必须修），唯一合法跳过是全零 SHA。✅ run #19 该步骤 success —— 由于 CI 下跳过即失败，**绿色本身即证明它真的跑过** |
@@ -765,10 +770,11 @@ liveness 失败 → **重启进程**；readiness 失败 → **摘掉流量，不
 已经死了，**必须重启应用进程**。这本身也说明了「readiness 只摘流量」是对的：
 真要让实例恢复服务，重启（由编排系统在进程真的不健康时执行）才是正确手段。
 
-**S3 的验证限度**：`web.depends_on` 改成 `condition: service_healthy` 由
-`docker-compose config` 确认（配置可解析、`container_name` 计数 0），
-但**没有真正起容器**验证「无 502 窗口」—— 本环境无 Docker 引擎。这一项与 E3 的 nginx 改动
-同属「只做了结构校验」，若要补齐同样需要一台 Docker 可用的机器。
+**S3 的验证限度（已关闭）**：当时只由 `docker-compose config` 确认了配置可解析
+（`container_name` 计数 0），**没有真正起容器**验证「无 502 窗口」—— 因为当时没有
+Docker 引擎。这一项与 E3 的 nginx 改动同属「只做了结构校验」。
+**2026-10-05 已补齐**：Docker 引擎可用后，两者都在真实容器拓扑里做了实测
+（E3：`--scale api=2` + 负载均衡；S3：启动期间 `502` 出现 0 次），见 §7.10。
 
 ### 7.6 C3：把「已应用迁移不可修改」做成能咬人的门禁
 
@@ -992,6 +998,132 @@ N 个副本就能拿到 N 倍尝试次数。要强一致需落库（给登录路
 
 > **最终状态**：两批共 17 个 PR 全部处理完毕，打开的 PR 为 0；`main` 的 CI 保持全绿。
 
+### 7.10 Docker 引擎可用后的补充实测（2026-10-05）
+
+此前所有涉及容器的结论都标着「本机 Docker 引擎不可用，只做了结构校验」。
+引擎可用后逐项补测，**三处空白全部关闭**。
+
+#### ① `docker compose up --build` 一键启动 —— 通过
+
+```
+Container 110-db-1  Started → Healthy
+Container 110-api-1 Started → Healthy      ← 等 db healthy 才启动
+Container 110-web-1 Started                 ← 等 api healthy 才启动
+```
+
+| 检查 | 结果 |
+| --- | --- |
+| 容器状态 | db / api / web **全部 healthy** |
+| 首页（nginx → 静态资源） | HTTP **200**，22ms |
+| `/api/health/live`（经 nginx 反代） | HTTP **200** |
+| `/api/health/ready` | HTTP **200**，`database: "ok"` |
+| **完整端到端（93 项断言，经真实 nginx）** | **93/93 通过，0 失败** |
+
+> 这同时验证了 **E3 的 nginx 反代语义** —— 报告原先标注「只做了结构解析校验，
+> 语义未经验证；若 `/api/` 返回 502，应优先检查 `resolver` + 变量式 `proxy_pass`」。
+> 实测**没有 502**，变量式 `proxy_pass` 工作正常。
+
+#### ② 横向扩展 `--scale api=2` —— 通过（E3 的核心声明）
+
+```
+Container 110-api-2 Started → Healthy
+SERVICE   STATUS
+api       Up (healthy)
+api       Up (healthy)
+```
+
+**没有出现 `container name is already in use`** —— 这正是去掉 `container_name` 的目的。
+进一步验证 nginx 是否真的**负载均衡**：发 12 个带唯一 `X-Request-Id` 的请求，按容器日志统计：
+
+```
+110-api-2 → 7 个
+110-api-1 → 5 个
+```
+
+**请求确实被分发到两个实例** —— `resolver` + 变量式 `proxy_pass` 的改动生效了。
+
+#### ③ 数据持久化（DEM-10）—— 通过
+
+原先只验证过「重启数据库**进程**」，未验证命名卷的保留行为。这次做了**真实的容器拆除 + 重建**：
+
+| 阶段 | app_user | requirement | event |
+| --- | --- | --- | --- |
+| `docker compose down` 之前 | 3 | 5 | 16 |
+| `docker compose up -d` 之后 | **3** | **5** | **16** |
+
+命名卷 `da-pgdata` 保留，数据一字不差；重建后端到端复跑仍是 93/93。
+
+#### ④ S3 的「无 502 窗口」—— 通过
+
+`down` + `up` 期间以 0.4s 间隔轮询 `/api/health/live`，统计状态码分布：
+
+| 状态码 | 次数 | 含义 |
+| --- | --- | --- |
+| `200` | 5 | 已就绪 |
+| `000` | 4 | 连接被拒（web 还没监听） |
+| **`502`** | **0** | **一次都没有** |
+
+机制与设计一致：`web` 在 `api` 就绪前**根本不监听**，因此 nginx 从未把请求转发给
+未就绪的 api —— 这正是 `condition: service_healthy` 要消掉的那段窗口。
+
+#### ⑤ E4 的「真实饱和 → 503」—— 通过（但踩了两个坑）
+
+这条路径此前只有单测覆盖。补测时连续遇到两个**会让压测得出错误结论**的坑，
+都值得记下来：
+
+**坑一：随机账号压不满闸门。** 第一次用 150 个随机账号压测，全部 401、无 503。
+原因是：账号在库里**不存在**时，`findUnique` 返回 null 就直接 401 了，
+**根本走不到闸门** —— 闸门只包住 `bcrypt.compare`。
+必须用**存在的账号**才能触发；而那又会撞上 S7 的失败限流，
+所以压测时把 `LOGIN_MAX_FAILURES` 调高、`LOGIN_CONCURRENCY/QUEUE_LIMIT` 调小。
+
+**坑二：`fetch` 会复用连接池。** 改用真实账号后仍然全部 401。查容器日志发现
+「闸门已满」只出现 2 次 —— 说明请求**不是真并发**：Node 的 `fetch`（undici）
+复用连接，150 个"并发"请求实际只有个位数同时在途。
+改用 `node:http` + `agent: false`（每请求独立连接）后立刻复现。
+
+**真并发结果（直连 api，绕过 nginx）**：
+
+| 状态码 | 次数 | 含义 |
+| --- | --- | --- |
+| **`503`** | **145** | 闸门已满 |
+| `401` | 5 | 闸门放行 |
+
+**5 = 并发上限 2 + 队列上限 3** —— 数字与配置严丝合缝。响应带 `Retry-After: 1`，
+压测后 `/health/live` 仍返回 200：**闸门做到了「宁可拒绝一部分请求，也不让全站被拖垮」**。
+
+**顺带发现的一个真实结论**：**经 nginx 时闸门压不满**。同样 150 并发走
+`http://localhost:8080/api`，全部 401、闸门最多只排到 3 个。也就是说 nginx 在
+上游做了缓冲，到达 api 的真实并发被削平了。这不是缺陷（反而让闸门更少被触发），
+但**它说明「经反代的压测」测不出后端闸门的行为** —— 要测闸门必须绕过 nginx 直连。
+
+**新增工具**：`scripts/probe-login-saturation.mjs`（把上述两个坑都写进了文件头注释，
+避免下次重踩）。
+
+> **一处诚实的边界**：S3 的「无 502」只采样到 9 个点（5 个 200 + 4 个 000 + 0 个 502）。
+> 样本量不大，但**机制是清楚的**（web 在 api healthy 前不监听），且 0 次 502 与机制一致。
+
+#### ⑥ 停库验证 S6 与 DEM-09 —— 通过
+
+`docker compose stop db` 之后（真实容器拓扑，非单测桩）：
+
+| 检查 | 期望 | 实测 |
+| --- | --- | --- |
+| `/api/health/live` | 200（**不碰数据库**） | ✅ **200** |
+| `/api/health/ready` | 503 | ✅ **503**，且 `database: "unreachable"` |
+| 业务接口（登录） | 5xx，**不得泄露内部细节** | ✅ **500** + `{"error":{"code":"INTERNAL_ERROR","message":"服务器内部错误，请稍后重试","requestId":"…"}}` |
+
+第三行就是 **DEM-09** —— 此前一直标着「需要操作数据库进程，属人工验证项」。
+实测确认：响应里**没有堆栈、没有 SQL、没有表名**，只有通用文案与一个可追溯的 `requestId`
+（这正是 S5 的用途：用户报错时能凭编号在日志里定位到那一次请求）。
+
+`docker compose start db` 之后：readiness 自动回到 **200**，端到端复跑 **93/93**，
+三容器全部 healthy —— **无需人工干预即自愈**。
+
+> 至此，报告原先列出的「人工验证项」已**全部关闭**。
+
+---
+
 **接入当天就抓到一个真问题（而且是门禁判对了）**：配置生效后 Dependabot 立刻开出 PR，
 其中 `@nestjs/common` 那个 PR 的 CI **红了**。原因在本地完整复现：
 
@@ -1040,7 +1172,7 @@ peer @nestjs/common@"^10.0.0 || ^11.0.0" from @nestjs/config@4.0.4
 - **E2**（详情/历史分页）—— 详情响应有上界且截断可见，完整时间线由 `/history` 按 `seq` 游标续取（见 §7.3）。
   至此报告开篇指出的「2 处会随数据量线性恶化的读路径」**全部消除**。
 - **E4**（登录并发闸门）—— 把 bcrypt 的 CPU 争用从「全站劣化」收窄为「登录排队或快速失败」（见 §7.4；
-  饱和路径只有单测覆盖，缺口已在那一节如实标注）。
+  饱和路径原先只有单测覆盖，缺口已在 §7.10 用真实并发补上）。
 - **S3**（`web` 等 `api` 健康）—— `depends_on` 改为 `condition: service_healthy`，消掉启动窗口的 502；
   ⚠️ 仅 `docker-compose config` 结构校验（本环境无 Docker 引擎）。
 - **S4**（entrypoint 错误可诊断）—— 捕获并打印 `migrate deploy` 完整输出，迁移类错误立即失败；
@@ -1065,6 +1197,12 @@ peer @nestjs/common@"^10.0.0 || ^11.0.0" from @nestjs/config@4.0.4
 **无法非破坏修复**的 high（见 §7.9）—— 直接 `npm audit --audit-level=high` 会让 CI
 永久变红，而永远红的门禁等于没有门禁。
 
-**仍然无法验证的两件事**（如实列出，不假装覆盖到了）：
-① `docker compose up --build` 的三容器编排、nginx 反代、命名卷挂载 —— 需要 Docker 引擎；
-② E4 的「真实饱和 → 503」与 S3 的「无 502 窗口」—— 同样需要 Docker 引擎。
+**原先标注「无法验证」的三件事，已在 2026-10-05 用真实 Docker 引擎全部补上**（见 §7.10）：
+
+① `docker compose up --build` 的三容器编排、**nginx 反代的语义**（此前只做了结构解析校验）、
+命名卷挂载；
+② **E4 的「真实饱和 → 503」** —— 压到了 145 个 503，且放行数恰好等于「并发 + 队列上限」；
+③ S3 的「无 502 窗口」—— 启动期间探测到的状态码里 **502 出现 0 次**。
+
+此外 **DEM-10 也从「重启数据库进程」升级为真实的容器拆除 + 重建**，
+命名卷的保留行为（3 用户 / 5 需求 / 16 事件在 `down` + `up` 后完全不变）得到了验证。

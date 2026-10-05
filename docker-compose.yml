@@ -54,6 +54,16 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       DB_WAIT_MAX_TRIES: "60"
       DB_WAIT_INTERVAL: "2"
+      # 登录防护的可调参数（报告 §5.1 E4 与 §5.2 S7）。
+      # 代码一直支持这几个变量、.env.example 也写了，但 compose 之前**没有透传** ——
+      # 于是容器里永远只能用默认值，等于这些配置项在部署路径上不可用。
+      # 留空则用代码里的默认值（并发数 = 容器可见的 CPU 数）。
+      LOGIN_CONCURRENCY: ${LOGIN_CONCURRENCY:-}
+      LOGIN_QUEUE_LIMIT: ${LOGIN_QUEUE_LIMIT:-}
+      LOGIN_ACQUIRE_TIMEOUT_MS: ${LOGIN_ACQUIRE_TIMEOUT_MS:-}
+      LOGIN_MAX_FAILURES: ${LOGIN_MAX_FAILURES:-}
+      LOGIN_FAILURE_WINDOW_MS: ${LOGIN_FAILURE_WINDOW_MS:-}
+      LOGIN_LOCKOUT_MS: ${LOGIN_LOCKOUT_MS:-}
     depends_on:
       db:
         condition: service_healthy

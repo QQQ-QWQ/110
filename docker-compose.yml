@@ -6,12 +6,18 @@
 # 启动后访问： http://localhost:8080
 # 首次启动自动完成：建库迁移 + 写入预置测试数据（幂等，可重复启动）
 # 数据保存在命名卷 pgdata 中：删除容器后重建，业务数据依然存在
+#
+# 本文件**刻意不写 `container_name`**：
+# 固定容器名会让 `docker compose up --scale api=2` 直接报
+# "container name is already in use"，是横向扩展的硬阻塞。
+# 去掉后容器名由 Compose 生成（如 <项目名>-api-1），而服务之间仍通过
+# **服务名**（db / api）互访，因此 `depends_on` 与 nginx 的
+# `proxy_pass http://api:3000` 都不受影响。
 # ============================================================
 
 services:
   db:
     image: postgres:16-alpine
-    container_name: da-db
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-app}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app_password}
@@ -33,9 +39,14 @@ services:
   api:
     build:
       context: ./backend
-    container_name: da-api
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app_password}@db:5432/${POSTGRES_DB:-demand_acceptance}?schema=public
+      # 连接池与超时**显式声明**，取值依据见 .env.example「数据库连接池与语句超时」。
+      #   · connection_limit / pool_timeout：Prisma 直接识别；
+      #   · statement_timeout：Prisma 无对应参数，改由 libpq 的 `options` 参数
+      #     下发给每一条新建连接（空格 → %20，等号 → %3D，必须 URL 编码）。
+      # Prisma 默认 statement_timeout = 0（**不限**），一条病态查询即可长期占用
+      # 连接；池耗尽后所有请求一起排队，故障从「一个接口慢」放大为「全站不可用」。
+      DATABASE_URL: "postgresql://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app_password}@db:5432/${POSTGRES_DB:-demand_acceptance}?schema=public&connection_limit=${DB_CONNECTION_LIMIT:-10}&pool_timeout=${DB_POOL_TIMEOUT:-10}&options=-c%20statement_timeout%3D${DB_STATEMENT_TIMEOUT_MS:-10000}"
       PORT: "3000"
       # 预置测试账号的初始密码（仅初始化时使用，可用 .env 覆盖）
       SEED_PASSWORD: ${SEED_PASSWORD:-Passw0rd!}
@@ -51,7 +62,6 @@ services:
   web:
     build:
       context: ./frontend
-    container_name: da-web
     ports:
       - "${WEB_PORT:-8080}:80"
     depends_on:

@@ -228,6 +228,68 @@ jobs:
         working-directory: backend
         run: npm ci --no-audit --no-fund
 
+      # ── C2 迁移漂移检测 ────────────────────────────────────────────
+      # 本仓库的迁移是**手写 SQL**（因为 Prisma schema 无法表达 15 条 CHECK
+      # 约束），于是「prisma/schema.prisma」与「prisma/migrations/」构成两套
+      # 真相。改了其中一套而忘记另一套，应用层与数据库层就会悄悄不一致 ——
+      # 而这类不一致在单测、构建、迁移重放里都不会报错。
+      #
+      # 这是唯一能自动拦住它的检查。用 --exit-code 让退出码承载语义：
+      #   0 = 一致；2 = 检测到漂移；其它 = 命令本身执行失败。
+      # 必须区分「漂移」与「跑不起来」，否则会把环境问题误报成漂移。
+      #
+      # 本地已验证（便携版 PostgreSQL，见 docs/测试与验证记录.md）：
+      #   无漂移 → 退出码 0，输出 "No difference detected."
+      #   故意给 schema 加一个字段 → 退出码 2，输出 "[+] Added column ..."
+      - name: 检测 Prisma schema 与迁移是否漂移（报告 §5.3 C2）
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://app:app_password@localhost:5432/migration_check?schema=public
+          SHADOW_DATABASE_URL: postgresql://app:app_password@localhost:5432/drift_shadow?schema=public
+        run: |
+          set -euo pipefail
+
+          # migrate diff 需要一个**独立的 shadow 库**来重放全部迁移，
+          # 不能复用业务库（会被重放过程破坏）。
+          # 复用 postgres 官方镜像自带的 psql，避免在 runner 上安装
+          # 与 service 镜像版本不一致的客户端。
+          psql_q() {
+            docker run --rm --network host \
+              -e PGPASSWORD=app_password postgres:16-alpine \
+              psql -h localhost -U app -d migration_check -tAc "$1"
+          }
+
+          if ! psql_q "SELECT 1;" >/dev/null 2>&1; then
+            echo "::error::无法连接数据库，无法执行漂移检测（这属于 CI 环境问题，不是漂移）"
+            exit 1
+          fi
+
+          psql_q "SELECT 1 FROM pg_database WHERE datname='drift_shadow'" | grep -q 1 \
+            || psql_q "CREATE DATABASE drift_shadow" >/dev/null
+
+          set +e
+          out=$(npx prisma migrate diff \
+            --from-migrations ./prisma/migrations \
+            --to-schema-datamodel ./prisma/schema.prisma \
+            --shadow-database-url "$SHADOW_DATABASE_URL" \
+            --exit-code 2>&1)
+          code=$?
+          set -e
+
+          echo "$out"
+
+          if [ "$code" -eq 0 ]; then
+            echo "✅ 迁移与 schema 一致，无漂移"
+            exit 0
+          fi
+          if [ "$code" -eq 2 ]; then
+            echo "::error::检测到漂移：prisma/schema.prisma 与 prisma/migrations/ 已不一致。"
+            echo "::error::上方以 [+] / [-] / [*] 标出了差异；请补齐对应的迁移，或修正 schema。"
+            exit 1
+          fi
+          echo "::error::prisma migrate diff 执行失败（退出码 $code，不是漂移，而是命令本身出错）"
+          exit 1
+
       - name: 在空库上执行迁移
         working-directory: backend
         env:
@@ -384,6 +446,12 @@ jobs:
             if(!ir||!ir.currentSubmissionId){console.error("::error::待验收需求的 current_submission_id 未回填");process.exit(1);}
             await p.$disconnect();
           })().catch(e=>{console.error(e);process.exit(1);});'
+
+      # S1 回归守卫：数据保留清理必须「只删该删的」。
+      # 用真实数据库插入 5 类样本行（含「超过 100 小时仍是 PROCESSING」的记录），
+      # 跑一次清理后断言「删除 / 保留」的边界。脚本自带清理，可重复执行。
+      - name: 验证数据保留清理（S1）
+        run: node scripts/verify-retention.mjs
 
       - name: 启动 API 并等待就绪
         working-directory: backend

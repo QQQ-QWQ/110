@@ -64,16 +64,24 @@ export class RequirementsController {
     @Query('state') state?: string,
     @Query('scope') scope?: string,
     @Query('keyword') keyword?: string,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
   ) {
     if (state && !(ALL_STATES as readonly string[]).includes(state)) {
       throw Errors.validation('状态筛选值不合法');
     }
     const normalizedScope = scope === 'proposed' || scope === 'assigned' ? scope : ('all' as const);
-    return this.service.list(user.userId, {
-      state: state as RequirementState | undefined,
-      scope: normalizedScope,
-      keyword,
-    });
+    return this.service.list(
+      user.userId,
+      {
+        state: state as RequirementState | undefined,
+        scope: normalizedScope,
+        keyword,
+      },
+      // limit / cursor 的校验与解码放在 service 内（与其余筛选值一致）：
+      // 控制器只做「状态枚举」这一处必须早于服务层的检查。
+      { limit, cursor },
+    );
   }
 
   @Post()

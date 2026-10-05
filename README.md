@@ -260,8 +260,9 @@ npm run dev                      # http://localhost:5173，/api 自动代理到 
 
 ```bash
 docker compose up --build -d          # 启动三服务
-node scripts/e2e.mjs                  # 跑 DEM-01 ~ DEM-08，输出「期望 / 实际」对照表
+node scripts/e2e.mjs                  # 跑 DEM-01 ~ DEM-08 + DEM-11，输出「期望 / 实际」对照表
 node scripts/e2e.mjs                  # 全部通过时退出码 0，可直接用于 CI
+node scripts/verify-retention.mjs     # 数据保留清理：插入样本行 → 跑一次清理 → 断言删留边界
 ```
 
 脚本不依赖任何第三方包（用 Node 22 内置 `fetch`），幂等键带每次运行唯一的前缀，因此**可反复执行**而不会命中上一轮的幂等记录。除断言外还会输出「观察项」，把**文档预期与代码实际行为不一致**的地方直接暴露出来，而不是默默通过。
@@ -278,7 +279,7 @@ node scripts/e2e.mjs                  # 全部通过时退出码 0，可直接�
 | --- | --- | --- | --- |
 | L1 编辑器 | 保存时 | 统一缩进/行尾/编码 | `.editorconfig` |
 | L2 版本控制 | 克隆/提交时 | 强制 LF，防止容器脚本被 CRLF 破坏 | `.gitattributes` |
-| L3 CI | 开 PR 时 | 格式检查 + 静态检查 + 单元测试 + 后端构建 / Prisma schema 校验与格式规范 + 前端类型检查/构建 + 迁移可回放（空库重放 + 15 条 CHECK 约束核验）+ **端到端（起真实服务 + 跑 DEM-00~08 共 44 项断言）** + 仓库卫生（行尾/密钥/构建产物） | `.github/workflows/ci.yml` |
+| L3 CI | 开 PR 时 | 格式检查 + 静态检查 + 单元测试 + 后端构建 / Prisma schema 校验与格式规范 + 前端类型检查/构建 + 迁移可回放（空库重放 + 15 条 CHECK 约束核验）+ **迁移漂移检测（schema ↔ migrations 一致性）** + **端到端（起真实服务 + 跑 DEM-00~08 与 DEM-11 共 56 项断言 + 数据保留清理验证）** + 仓库卫生（行尾/密钥/构建产物） | `.github/workflows/ci.yml` |
 | L4 人工 | PR 审查 | 正确性、安全、并发、可读性、测试覆盖（风格已由 L1~L3 覆盖，不占用人工带宽） | `.github/PULL_REQUEST_TEMPLATE.md`、`.github/CODEOWNERS` |
 
 **自动化质量门禁现状**
@@ -288,7 +289,7 @@ node scripts/e2e.mjs                  # 全部通过时退出码 0，可直接�
 | 格式（Prettier） | ✅ | ✅ | `npm run format:check` |
 | 静态检查（ESLint） | ✅ 0 error 0 warning | ✅ 0 error 0 warning | `npm run lint` |
 | 类型检查 / 构建 | ✅ `nest build` | ✅ `vue-tsc` + `vite build` | `npm run build` |
-| 单元测试 | ✅ **50 个** | ✅ **75 个** | `npm test` |
+| 单元测试 | ✅ **76 个** | ✅ **77 个** | `npm test` |
 
 ```bash
 # 完整验证（任一步失败即视为不合格）
@@ -313,7 +314,7 @@ cd frontend && npm run format:check && npm run lint && npm run typecheck && npm 
 
 上表两个根因都由静态检查就能拦住。但 2026-10-05 的首次真实端到端实跑暴露了**另外两个静态检查全都漏掉的缺陷**：`seed.ts` 循环外键写序错误（会让 `api` 容器起不来，即「一键启动」实际不可用）与「版本过期 412 被状态冲突 409 抢先」。两者都**只在服务真正跑起来时才暴露** —— 单测不碰 HTTP 与数据库，后端 job 只 build，迁移 job 不验证种子能否写入。
 
-因此新增 `e2e` job：postgres service → `prisma generate` + `migrate deploy` → `npm run build` → `node dist/seed.js` → **种子完整性断言** → 起 API 等就绪 → `node scripts/e2e.mjs`（DEM-00~08，44 项断言）。其中「种子完整性断言」是缺陷 ① 的直接回归守卫 —— 因为 seed 退出码为 0 并不等于数据真的写全了。
+因此新增 `e2e` job：postgres service → `prisma generate` + `migrate deploy` → `npm run build` → `node dist/seed.js` → **种子完整性断言** → 起 API 等就绪 → `node scripts/e2e.mjs`（DEM-00~08 + DEM-11，56 项断言）。其中「种子完整性断言」是缺陷 ① 的直接回归守卫 —— 因为 seed 退出码为 0 并不等于数据真的写全了。
 
 该 job 刻意**不用** `docker compose up` 起服务，而是用 postgres service + 直接运行编译产物：本环境拿不到 GitHub Actions 的 job 日志（公开仓库的 logs 接口也要求管理员权限），用 compose 起服务一旦失败就只能看到「某一步红了」而看不到原因，会陷入「改一版→推一次→猜一次」的循环。现有写法与 `docs/测试与验证记录.md` §4.2 中手工验证过的命令逐字一致，**每条都能在本地复现**。
 
@@ -325,25 +326,38 @@ cd frontend && npm run format:check && npm run lint && npm run typecheck && npm 
 
 | 类别 | 用例数 | 覆盖要点 |
 | --- | --- | --- |
-| 权限 | 10 | 无关账号 404、越权 403、状态不符 409、未登录 401；判定优先级 404 → 403 → 409 |
+| 权限 | 10 | 无关账号 404、越权 403、状态不符 409、未登录 401；判定优先级 404 → 403 → 412 → 409 |
 | 并发与幂等 | 8 | 指纹对键顺序不敏感、对内容敏感；`If-Match` 解析 |
 | 业务不变量 | 17 | 退回必填原因、未全通过不得完成、emoji 按 code points 计数、URL 两层判定一致 |
 | 状态机 | 12 | 全部合法流转 + 全部非法流转被拒 + 终态不可逆 |
+| 数据保留 | 14 | 只删 `COMPLETED` 且超 24h；**`PROCESSING` 一律不删**；where 子句与判定函数一致性矩阵 |
+| 分页 | 12 | 游标编解码、非法输入 422、`limit` 收敛；**模拟翻页：25 行大量同毫秒，逐页取完不重复不遗漏** |
 
 > 后端测试直接跑编译产物 `dist/`，使用 Node 内置 `node:test`，**不引入任何测试运行时依赖**。
 
-**前端测试覆盖**（75 个，Vitest）
+**前端测试覆盖**（77 个，Vitest）
 
 | 文件 | 用例数 | 覆盖要点 |
 | --- | --- | --- |
-| `api.test.ts` | 15 | 错误映射、刷新判定、写请求必须携带 `If-Match` / `Idempotency-Key` |
+| `api.test.ts` | 17 | 错误映射、刷新判定、写请求必须携带 `If-Match` / `Idempotency-Key`、分页参数进入查询串 |
 | `utils/validate.test.ts` | 25 | code points 计数、URL 与数据库 CHECK 判定一致、各字段上下限、服务端文案归类 |
 | `utils/format.test.ts` | 11 | 非法日期回退、相对时间边界、emoji 安全截断 |
 | `components/render.test.ts` | 24 | 组件**真实渲染输出**：引导文案随「状态 × 角色」变化、Vn 独立留痕、验收面板初始禁用态、`role` 语义 |
 
 > 前端组件测试用 Vue 内置的 `vue/server-renderer` 做渲染断言，**零新增依赖**（不引入 jsdom / test-utils）；断言的是真实 DOM 结构与 aria 属性，而非「组件能被挂载」。交互流程与响应式布局由 `scripts/e2e.mjs` 与手工验收覆盖。
 
-**已知质量缺口（诚实披露）**：尚未接入本地 `pre-commit` 钩子与依赖漏洞扫描（`npm audit` / Dependabot），见标准 §6.5。单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互；跨层端到端行为由 `scripts/e2e.mjs` 覆盖（DEM-00~08，已实跑 44/44 通过），并**已接入 CI**（`e2e` job，见上）。`docker compose up --build` 三容器一键启动、nginx 反代与命名卷挂载尚未实测（本机 Docker 引擎不可用）—— 这是当前门禁体系**最后一处空白**：`compose` job 只校验配置文件的语法与变量插值，并不真正起容器。DEM-09（停库降级为通用 500）与 DEM-10（重启后数据不丢）需要操作数据库进程，无法在 `e2e` job 内完成，仍属人工验证项（DEM-10 以「重启数据库进程」替代「容器重建」，未验证命名卷保留行为）。未做并发压测。前端组件测试为 SSR 渲染断言，不含 jsdom 点击交互模拟。
+**架构报告 P0 六项的落地情况**（详见 [`docs/后端架构审核与CI排查报告.md`](docs/后端架构审核与CI排查报告.md) §6）
+
+| 项 | 落地内容 | 验证 |
+| --- | --- | --- |
+| C6 CI 起服务跑 e2e | 第 6 个 CI job（见上） | ✅ run #8 |
+| E1 列表游标分页 | 键集分页 + 前端「加载更多」 | ✅ 单测 12 + e2e DEM-11 12 项 |
+| S1 数据保留清理 | 幂等记录 / 会话的定时清理 | ✅ 单测 14 + 真实库 5/5 |
+| S2 连接池与语句超时 | `connection_limit` / `pool_timeout` / `statement_timeout=10s` | ✅ `SHOW statement_timeout` 由 `0` → `10s` |
+| E3 解除横扩阻塞 | 去 `container_name`；nginx `resolver` + 变量式 `proxy_pass` | ⚠️ 仅配置结构校验（无 Docker 引擎 / nginx 二进制） |
+| C2 迁移漂移检测 | `prisma migrate diff --exit-code` | ✅ 本地双向验证 + run #10 |
+
+**已知质量缺口（诚实披露）**：尚未接入本地 `pre-commit` 钩子与依赖漏洞扫描（`npm audit` / Dependabot），见标准 §6.5。单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互；跨层端到端行为由 `scripts/e2e.mjs` 覆盖（DEM-00~08 + DEM-11，已实跑 **56/56** 通过），并**已接入 CI**（`e2e` job，见上）。`docker compose up --build` 三容器一键启动、nginx 反代与命名卷挂载尚未实测（本机 Docker 引擎不可用）—— 这是当前门禁体系**最后一处空白**：`compose` job 只校验配置文件的语法与变量插值，并不真正起容器。**E3 的 nginx 改动因此只做了结构解析校验，语义未经验证** —— 若 `docker compose up` 后 `/api/` 返回 502，应优先检查该处（`resolver` + 变量式 `proxy_pass`）。DEM-09（停库降级为通用 500）与 DEM-10（重启后数据不丢）需要操作数据库进程，无法在 `e2e` job 内完成，仍属人工验证项（DEM-10 以「重启数据库进程」替代「容器重建」，未验证命名卷保留行为）。未做并发压测。前端组件测试为 SSR 渲染断言，不含 jsdom 点击交互模拟。
 
 ---
 

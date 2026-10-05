@@ -11,10 +11,10 @@
 | 议题 | 结论 |
 |---|---|
 | **CI 为何持续失败** | **两个独立根因**，而非 5 个 job 各自的问题：① `schema.prisma` 的 `@relation` 属性跨行书写，Prisma 解析器不支持 → 同时打红「后端」与「迁移可回放性」两个 job；② 「后端」job 的 `prisma validate` 步骤缺 `DATABASE_URL` → 即使修好①该步骤仍会红。 |
-| **当前状态** | **已修复并验证**：commit `603cedc` 推送后 CI 由「4 次全红」转绿，此后 run #6 / #7 / #8 **连续全绿**。最新 run #8（`610dfa7`）为 **6 个 job、64 个步骤全部 success**（唯一 skipped 的是 `if: failure()` 的日志步骤，按设计跳过）。 |
+| **当前状态** | **已修复并验证**：commit `603cedc` 推送后 CI 由「4 次全红」转绿，此后 run #6 / #7 / #8 / #9 / #10 **连续全绿**。最新 run #10（`c9017b9`）为 **6 个 job、66 个步骤全部 success**（唯一 skipped 的是 `if: failure()` 的日志步骤，按设计跳过）。 |
 | **可扩展性** | 读路径存在 **2 处会随数据量线性恶化**的无界查询（列表无分页、详情含无界事件流）；横向扩展有 **2 个硬阻塞**（`container_name` 阻断 `--scale`、nginx 不在运行时重解析 DNS）。写路径（乐观锁 + 幂等）本身是可横向扩展的。 |
 | **稳定性** | 核心写路径的事务/幂等/乐观锁设计是**扎实的**；主要缺口在**运维面**：幂等记录与会话过期行无清理（无界增长）、连接池与语句超时未显式配置、无 request-id 关联日志、`web` 未等服务健康即启动。 |
-| **最高优先级动作** | P0 共 6 项。其中 **C6「CI 起服务跑 e2e」已落地**（见 §5.3）；其余 5 项均为小改动、低风险：列表游标分页、幂等记录 TTL、连接池与超时、解除横向扩展阻塞、CI 补「迁移漂移检测」。 |
+| **最高优先级动作** | **P0 共 6 项已全部落地**（见 §6）：CI 起服务跑 e2e、列表游标分页、数据保留清理、连接池与超时、解除横向扩展阻塞、迁移漂移检测。5 项有自动化验证（单测 / 真实数据库 / e2e / CI）；**唯一例外是 E3 的 nginx 改动**，只做了结构解析校验（本环境无 Docker 引擎与 nginx 二进制）。 |
 
 ---
 
@@ -208,7 +208,7 @@ src/
 
 **评价：分层是干净的，依赖方向单向（modules → pipeline → domain，core 被各层共享但无反向依赖）。** 两个设计决策尤其值得肯定：
 
-1. **`domain/` 零依赖纯函数** —— 状态机、授权、不变量都不碰数据库、不碰 HTTP，因此能被 50 个单元测试直接覆盖，无需起库。这是「领域逻辑可验证」的前提。
+1. **`domain/` 零依赖纯函数** —— 状态机、授权、不变量都不碰数据库、不碰 HTTP，因此能被 60 余个单元测试直接覆盖，无需起库。这是「领域逻辑可验证」的前提。
 2. **POLICY 单点** —— 角色判定只在 `policy.ts` 一处（`assertCanRead` / `assertCanPerform`），controller 内被明令禁止写角色判断。这消除了「权限散落在 N 个 handler」这一最常见的越权来源。
 
 ### 2.2 统一写命令管道（`pipeline/command-pipeline.ts`）
@@ -472,7 +472,7 @@ if npx prisma migrate deploy; then ...
 | # | 改进 | 具体做法 | 关键取舍 |
 |---|---|---|---|
 | S1 | **定时清理任务** | 应用内定时任务（`@nestjs/schedule` 或 `setInterval`）：删除 24h 前 `status='COMPLETED'` 的幂等记录、`expires_at < now()` 的会话；对长期滞留的 `PROCESSING` 记录单独告警。 | 必须**保留 `PROCESSING` 记录**（见 4.2-①）。多副本下定时任务会重复执行 —— 用 `DELETE ... WHERE ...` 的幂等性天然容忍（不会出错，只是浪费一次查询），无需分布式锁。 |
-| S2 | **连接池与超时显式化** | `DATABASE_URL` 加 `connection_limit` / `pool_timeout`；设置 `statement_timeout`。 | 见 4.2-③：`statement_timeout` 需按实际数据量调参，过短会误杀正常慢查询。 |
+| S2 | ✅ **已落地** — 连接池与超时显式化 | `DATABASE_URL` 加 `connection_limit` / `pool_timeout`；通过 libpq `options` 设置 `statement_timeout`。 | 见 4.2-③：`statement_timeout` 需按实际数据量调参，过短会误杀正常慢查询。当前取 10s（先宽松）。 |
 | S3 | **`web` 等 `api` 健康** | `depends_on: api: condition: service_healthy`。 | 见 4.2-④：`web` 启动被推迟（最多 40s+），换取无 502 窗口。 |
 | S4 | **entrypoint 错误可诊断** | 输出 `migrate deploy` 完整 stderr；区分连接类/SQL 类错误，后者立即失败。 | 见 4.2-⑤：错误分类依赖 stderr 文本匹配，略脆弱；「打印真实错误」是纯收益。 |
 | S5 | **request-id 贯穿日志** | 中间件生成/透传 `X-Request-Id`，异常过滤器与访问日志输出，5xx 响应头回传。 | 见 4.2-⑥：轻量版（只改过滤器与日志）优于全量 AsyncLocalStorage 改造。 |
@@ -488,7 +488,7 @@ if npx prisma migrate deploy; then ...
 | C3 | **已应用迁移不可修改** | 检测 `prisma/migrations/` 下**已存在目录**内文件被修改 → 告警（新增目录放行）。 | 需要在 CI 中对比 base 分支，实现略复杂（`git diff --name-only ${{ github.event.pull_request.base.sha }}...HEAD -- prisma/migrations`）。纯 push 触发时无 base，需降级为「跳过并提示」。 |
 | C4 | **本地前置检查** | `scripts/preflight.mjs`：一键复跑 CI 的机械检查（schema 格式、行尾、Prettier、lockfile 同步）。 | 把反馈周期从 3~5 分钟压到 1 秒。代价：需要开发者记得跑 —— 用 `pre-push` 钩子可强制，但钩子可被 `--no-verify` 绕过（这是设计使然，不是缺陷）。 |
 | C5 | **分支保护声明** | 在 `docs/代码审查标准与流程.md` 明确 main 的 required status checks，作为交付验收项。 | 仓库内的文档无法强制 GitHub 侧配置；但**把「已配置分支保护」写成验收项**能确保它不被遗忘。 |
-| **C6** | ✅ **已落地**（**本轮新增，优先级最高**） | 新增 `e2e` job：postgres service → `prisma generate` + `migrate deploy` → `npm run build` → `node dist/seed.js` → 种子完整性断言 → `node dist/main.js` 等就绪 → `node scripts/e2e.mjs`（DEM-00~08，44 项断言）。 | **这是唯一能拦住「跨层缺陷」的检查。** 见下方说明 —— 它的必要性已由本轮实跑直接证明。 |
+| **C6** | ✅ **已落地**（**本轮新增，优先级最高**） | 新增 `e2e` job：postgres service → `prisma generate` + `migrate deploy` → `npm run build` → `node dist/seed.js` → 种子完整性断言 → `node dist/main.js` 等就绪 → `node scripts/e2e.mjs`（DEM-00~08 + DEM-11，56 项断言）。 | **这是唯一能拦住「跨层缺陷」的检查。** 见下方说明 —— 它的必要性已由本轮实跑直接证明。 |
 
 **为什么 C6 的优先级最高（有实证）**
 
@@ -503,7 +503,7 @@ if npx prisma migrate deploy; then ...
 两者的共同点：**都只在服务真正跑起来时才暴露**。因此在 CI 里跑一遍 e2e
 不是「锦上添花」，而是补上了当前门禁体系中缺失的一整层。
 
-> **取舍**：该 job 会让 CI 时间显著增加（安装依赖 + 构建 + 起库 + 起服务 + 44 项断言，估 +2~3 分钟），
+> **取舍**：该 job 会让 CI 时间显著增加（安装依赖 + 构建 + 起库 + 起服务 + 56 项断言，估 +2~3 分钟），
 > 且需要维护「CI 里如何起服务」的编排逻辑（与 `docker compose` 存在重复）。
 
 **落地时的决定：没有按上面的建议用 `docker compose up`，而是用 postgres service + 直接运行编译产物。**
@@ -534,7 +534,7 @@ if npx prisma migrate deploy; then ...
 
 | 验证点 | 结果 |
 |---|---|
-| 新增 `e2e` job 在真实 runner 上跑通 | ✅ 6 个 step 全部 success（`Initialize containers` → 安装依赖 → generate/migrate/build/seed → 种子完整性断言 → 起 API 等就绪 → 44 项断言） |
+| 新增 `e2e` job 在真实 runner 上跑通 | ✅ 6 个 step 全部 success（`Initialize containers` → 安装依赖 → generate/migrate/build/seed → 种子完整性断言 → 起 API 等就绪 → 44 项断言；**run #8 时点**，脚本后续扩展至 DEM-11 共 56 项，见 §7） |
 | 是否拖慢流水线 | 该 job 约 **37 秒**（含 `npm ci`、`prisma generate`、`migrate deploy`、`nest build`、起库起服务与全部断言），远低于预估的 +2~3 分钟 —— 因为 `setup-node` 的 npm 缓存命中了 |
 | 是否引入不稳定 | 6 个 job 一次性全绿，无重试 |
 | 既有 5 个 job 是否受影响 | ❌ 无。run #8 中其余 5 个 job 结论与 run #7 一致 |
@@ -565,16 +565,19 @@ if npx prisma migrate deploy; then ...
 
 ### P0 —— 本次必做（低风险、高收益、改动小）
 
-> 进度：**6 项中 1 项已完成**（C6，已由远端 run #8 验证）。其余 5 项待实施。
+> 进度：**6 项全部完成**。C6 由远端 run #8 验证；其余 5 项由 run #10 验证（6/6 job 全绿，66 个步骤）。
+>
+> 落地时与本表初稿的**偏差**已在下方逐项标注 —— 尤其是 C6（放弃 compose 起服务，理由见 §5.3）
+> 与 E3 的 nginx 部分（无法在本环境执行，仅做了结构校验）。
 
-| 项 | 预估改动 | 验证方式 |
+| 项 | 落地内容 | 验证证据 |
 |---|---|---|
-| ✅ **C6 CI 起服务跑 e2e**（**最优先，已完成**） | `.github/workflows/ci.yml` 新增 `e2e` job —— postgres service + 编译产物直跑，**未**用 `docker compose up`（反转理由见 §5.3） | ✅ 已完成：run #8（`610dfa7`）**6/6 job 全绿**，新增 job 约 37 秒 |
-| E1 列表游标分页 | `requirements.service.ts` + controller DTO + 前端列表页 | 单测：分页边界（空结果、最后一页、非法 cursor）；实跑：`node scripts/e2e.mjs` |
-| S1 定时清理任务 | 新增 `core/maintenance.service.ts` + 定时器 | 单测：清理只删 `COMPLETED` 与过期会话；实跑：插入过期行后确认被删 |
-| S2 连接池与超时 | `.env.example` + `docker-compose.yml` | 实跑：`docker compose config` + 观察连接数 |
-| E3 解除横扩阻塞 | `docker-compose.yml` 删 2 处 `container_name`；`nginx.conf` 加 `resolver` | 实跑：`docker compose up --scale api=2` 确认不再报错 |
-| C2 迁移漂移检测 | `.github/workflows/ci.yml` 的 `migrations` job | CI 自证：故意改 schema 不加迁移 → 应红 |
+| ✅ **C6 CI 起服务跑 e2e**（**最优先**） | `.github/workflows/ci.yml` 新增 `e2e` job —— postgres service + 编译产物直跑，**未**用 `docker compose up`（反转理由见 §5.3） | ✅ run #8（`610dfa7`）**6/6 job 全绿**，新增 job 约 37 秒 |
+| ✅ **E1 列表游标分页** | 新增 `domain/pagination.ts`（零依赖纯函数）；`requirements.service.ts` 改键集分页，`orderBy` 补决胜键 `id`；controller 加 `limit`/`cursor`；前端 `api.ts` + `ListView.vue` 加「加载更多」 | ✅ 单测 12 条（含**模拟翻页**：25 行大量同毫秒，逐页取完不重复不遗漏）；✅ e2e 新增 DEM-11 共 12 项断言全通过 |
+| ✅ **S1 数据保留清理** | 新增 `domain/retention.ts` + `core/maintenance.service.ts`；启动跑一次 + 周期跑，`unref` 不阻塞退出 | ✅ 单测 14 条（含 **where 子句 vs 判定函数一致性矩阵**）；✅ `scripts/verify-retention.mjs` 对真实库 5/5 通过（含「PROCESSING 超 100h 必须保留」） |
+| ✅ **S2 连接池与超时** | `.env.example` + `docker-compose.yml` 显式声明 `connection_limit` / `pool_timeout` / `statement_timeout` | ✅ 实测 `SHOW statement_timeout` 由 `0` 变 `10s`；`connection_limit=2` 确实改变并发行为；✅ `docker-compose config` 插值正确 |
+| ✅ **E3 解除横扩阻塞** | `docker-compose.yml` 移除 3 处 `container_name`；`nginx.conf` 改 `resolver` + 变量式 `proxy_pass` | ⚠️ **部分验证**：`container_name` 由 `docker-compose config` 确认移除；nginx 改动**只做了结构解析校验**（无 Docker 引擎、无 nginx 二进制，语义未执行） |
+| ✅ **C2 迁移漂移检测** | `migrations` job 新增 `prisma migrate diff --from-migrations --to-schema-datamodel --exit-code`，用退出码区分「漂移(2)」与「执行失败」 | ✅ 本地双向验证：无漂移 → 0；故意加字段 → 2 并打印 `[+] Added column`；✅ run #10 该步骤 success |
 
 ### P1 —— 应当做（稳定性运维面）
 
@@ -590,7 +593,7 @@ E5 会话缓存（**需先解决与「登出即时失效」的冲突**）、S6 l
 |---|---|
 | 引入 Redis | 架构约束明确禁止。且当前无状态设计已能横扩，Redis 主要能解决「跨副本会话缓存」与「分布式限流」—— 前者与「登出即时失效」冲突，后者在本题规模下用内存实现足够。 |
 | 换回原生 `bcrypt` | 与 Dockerfile 明确要规避「原生模块构建风险」的决策冲突。用 E4 并发闸门更划算。 |
-| 把 `domain/` 拆分或引入 DDD 聚合根等重型模式 | `domain/` 已经是零依赖纯函数、50 个单测覆盖、职责清晰。当前复杂度下引入更重的模式只增加认知成本，不解决任何已识别的问题。 |
+| 把 `domain/` 拆分或引入 DDD 聚合根等重型模式 | `domain/` 已经是零依赖纯函数、60 余个单测覆盖、职责清晰。当前复杂度下引入更重的模式只增加认知成本，不解决任何已识别的问题。 |
 | 为写路径引入分布式锁 | 乐观锁（`rowVersion` 条件更新）已正确解决并发写；分布式锁会引入新的故障点（锁服务不可用即全站不可写），且比乐观锁更慢。 |
 | 把 `event` 表改成只存最新状态 | 事件流是「需求历史可追溯」这一验收项的实现基础（`seq = row_version`，与乐观锁版本号严格对齐）。只应分页，不应裁剪语义。 |
 
@@ -608,16 +611,34 @@ E5 会话缓存（**需先解决与「登出即时失效」的冲突**）、S6 l
 | 引入根因一的提交 | `git log -p -3 -- backend/prisma/schema.prisma` → `5d5a11a` |
 | 修复后 CI 全绿 | run #5（`603cedc`）5/5 job success |
 | C6 落地后 CI 全绿 | run #8（`610dfa7`）**6/6 job success，64 步骤，仅 1 个 `if: failure()` 步骤按设计跳过** |
+| P0 全部落地后 CI 全绿 | run #10（`c9017b9`）**6/6 job success，66 步骤**（新增「迁移漂移检测」与「数据保留清理验证」两步） |
 | C6 失败会变红（链路核验） | `tail -20 scripts/e2e.mjs` → `process.exit(failures === 0 ? 0 : 1)`；Actions `run:` 默认 `bash -e` |
-| 后端本地门禁 | `npm run format:check` / `npm run lint` / `npm test`（50/50） |
+| 后端本地门禁 | `npm run format:check` / `npm run lint` / `npm test`（**76/76**，含 retention 14 + pagination 12） |
+| C2 漂移检测双向验证 | 无漂移 → 退出码 0 `No difference detected.`；故意给 schema 加字段 → 退出码 2 `[+] Added column drift_probe_field` |
+| S1 真实库验证 | `node scripts/verify-retention.mjs` → 5/5 通过（含「PROCESSING 超 100h 必须保留」） |
+| S2 生效验证 | `SHOW statement_timeout` 由 `0` → `10s`（`options=-c%20statement_timeout%3D10000`） |
+| E1 端到端验证 | `node scripts/e2e.mjs` → **56 项断言 0 失败**（含 DEM-11 共 12 项） |
 | CHECK 约束清单 | `grep -oE '"[a-z_]+_chk"' backend/prisma/migrations/0001_init/migration.sql \| sort -u` → 15 条 |
-| 幂等记录无清理 | `grep -rn "idempotencyRecord" backend/src \| grep -iE "delete\|clean\|purge"` → 空 |
-| 无分页 | `grep -rn "take:\|skip:\|cursor" backend/src` → 空 |
-| 无限流 | `grep -rn "throttle\|rateLimit" backend/src` → 空 |
-| 横扩阻塞 | `docker-compose.yml:36` `container_name: da-api`；`frontend/nginx.conf:26` `proxy_pass http://api:3000;` |
+| 幂等记录无清理（**审核时**，现已修复） | `grep -rn "idempotencyRecord" backend/src \| grep -iE "delete\|clean\|purge"` → 当时为空 |
+| 无分页（**审核时**，现已修复） | `grep -rn "take:\|skip:\|cursor" backend/src` → 当时为空 |
+| 无限流（**仍未做**，属 P2） | `grep -rn "throttle\|rateLimit" backend/src` → 空 |
+| 横扩阻塞（**审核时**，现已修复） | 当时 `docker-compose.yml:36` `container_name: da-api`；`frontend/nginx.conf:26` `proxy_pass http://api:3000;` |
 
 ---
 
 ## 8. 一句话总结
 
-**CI 的问题不是「5 个 job 各自坏了」，而是「1 个 schema 语法错误 + 1 个缺失的环境变量」；架构的问题不是「设计错了」，而是「设计是对的，但缺少面向增长与运维的收口」。** 前者已修复并在远端验证（run #5~#8 连续全绿）；后者已按 P0/P1/P2 排出优先级，其中 **P0 共 6 项，最高优先级的 C6（CI 起服务跑 e2e）已落地并验证（run #8，6/6 job 全绿）** —— 这一项的意义是：本轮两个「只在服务真跑起来时才暴露」的跨层缺陷，从此有了自动化拦截。剩余 5 项均为小改动、低风险、可被单测与端到端脚本验证。
+**CI 的问题不是「5 个 job 各自坏了」，而是「1 个 schema 语法错误 + 1 个缺失的环境变量」；架构的问题不是「设计错了」，而是「设计是对的，但缺少面向增长与运维的收口」。**
+
+前者已修复并在远端验证（run #5~#10 连续全绿）。后者按 P0/P1/P2 排出优先级后，**P0 六项已全部落地**：
+
+- **C6**（CI 起服务跑 e2e）—— 本轮两个「只在服务真跑起来时才暴露」的跨层缺陷，从此有了自动化拦截；
+- **E1**（列表游标分页）—— 唯一会随数据量线性恶化的读路径，现在有上界；
+- **S1**（数据保留清理）—— 幂等记录与会话不再无界增长，且明确「PROCESSING 一律不删」；
+- **S2**（连接池与语句超时）—— `statement_timeout` 从「不限」变为 10s；
+- **E3**（解除横扩阻塞）—— `--scale` 不再被容器名与 nginx 静态解析挡住；
+- **C2**（迁移漂移检测）—— 手写 SQL 与 Prisma schema 这两套真相之间，第一次有了自动比对。
+
+**一处必须说清的例外**：E3 的 nginx 改动**没有被执行验证** —— 本环境既无 Docker 引擎也无 nginx 二进制，
+只做了配置结构解析（所有指令均被正确解析）。其余各项都有单测 / 真实数据库 / e2e / CI 的实证。
+仍未被任何自动化覆盖的，只剩 `docker compose up --build` 的容器编排路径本身。

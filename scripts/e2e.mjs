@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 端到端验证脚本 —— DEM-01 ~ DEM-08
+ * 端到端验证脚本 —— DEM-01 ~ DEM-08 + DEM-11（列表游标分页）
  *
  * 把《docs/测试与验证记录.md》§3 的手工 curl 步骤收敛成**一条可重复执行的命令**，
  * 输出「期望状态码 / 实际状态码」对照表，全部通过时退出码为 0。
@@ -157,9 +157,11 @@ async function main() {
   const [C1, C2, C3] = criteria;
 
   const carolList = await call('GET', '/requirements', { cookie: carol });
-  const carolSees = Array.isArray(carolList.json)
-    ? carolList.json.some((r) => r.id === rid)
-    : false;
+  // 列表响应已改为「一页 + 分页信息」（{ items, pageInfo }），不再是裸数组。
+  // 这里同时断言形状，让「响应结构被改回去」这类回归也能被发现。
+  check('DEM-01', '列表响应为分页结构 { items, pageInfo }', true, Array.isArray(carolList.json?.items));
+  const carolItems = Array.isArray(carolList.json?.items) ? carolList.json.items : [];
+  const carolSees = carolItems.some((r) => r.id === rid);
   check('DEM-01', '无关账号列表中不可见（carol）', false, carolSees);
 
   const carolDetail = await call('GET', `/requirements/${rid}`, { cookie: carol });
@@ -428,6 +430,45 @@ async function main() {
 
   const anonymous = await call('GET', '/requirements');
   check('DEM-08', '未登录访问 → 401', 401, anonymous.status);
+
+  // ══════════════════ DEM-11 列表游标分页 ══════════════════
+  // 此前列表无分页，返回当前用户可见的全部需求 —— 唯一会随数据量线性恶化的读路径。
+
+  const page1 = await call('GET', '/requirements?limit=1', { cookie: alice });
+  check('DEM-11', 'limit=1 → 200', 200, page1.status);
+  check('DEM-11', 'items 恰好 1 条', 1, (page1.json?.items ?? []).length);
+  check('DEM-11', 'pageInfo.limit 回显为 1', 1, page1.json?.pageInfo?.limit);
+
+  const cursor1 = page1.json?.pageInfo?.nextCursor ?? null;
+  const hasMore1 = page1.json?.pageInfo?.hasMore === true;
+  check('DEM-11', '还有下一页时 hasMore=true 且给出 nextCursor', true, hasMore1 && !!cursor1);
+
+  if (cursor1) {
+    const page2 = await call('GET', `/requirements?limit=1&cursor=${encodeURIComponent(cursor1)}`, {
+      cookie: alice,
+    });
+    check('DEM-11', '带游标取第二页 → 200', 200, page2.status);
+    const id1 = page1.json?.items?.[0]?.id;
+    const id2 = page2.json?.items?.[0]?.id;
+    // ★ 分页的核心正确性：相邻两页不得出现同一行
+    check('DEM-11', '★ 第二页与第一页无重复行', false, id1 !== undefined && id1 === id2);
+  }
+
+  // 非法游标属于「请求参数错误」，应为 422 而非 500
+  const badCursor = await call('GET', '/requirements?cursor=%E4%B8%8D%E6%98%AF%E6%B8%B8%E6%A0%87', {
+    cookie: alice,
+  });
+  check('DEM-11', '非法游标 → 422（不是 500）', 422, badCursor.status);
+
+  const badLimit = await call('GET', '/requirements?limit=0', { cookie: alice });
+  check('DEM-11', '非法 limit=0 → 422', 422, badLimit.status);
+
+  const hugeLimit = await call('GET', '/requirements?limit=99999', { cookie: alice });
+  check('DEM-11', 'limit 超上限 → 200（收敛而非报错）', 200, hugeLimit.status);
+  check('DEM-11', 'limit 收敛到上限 100', 100, hugeLimit.json?.pageInfo?.limit);
+
+  const noCursor = await call('GET', '/requirements', { cookie: alice });
+  check('DEM-11', '不传游标 → 取第一页且 hasMore 为布尔', true, typeof noCursor.json?.pageInfo?.hasMore === 'boolean');
 
   // ══════════════════ 输出报告 ══════════════════
 

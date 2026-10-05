@@ -1,4 +1,4 @@
-import type { RequirementDetail, RequirementListItem, UserBrief } from './types';
+import type { RequirementDetail, RequirementListPage, UserBrief } from './types';
 
 /**
  * 统一 API 客户端。
@@ -112,13 +112,22 @@ export const api = {
   members: () => request<UserBrief[]>('/auth/members'),
 
   // ── 需求 ──
-  listRequirements: (q: { state?: string; scope?: string; keyword?: string } = {}) => {
+  /**
+   * 列表（游标分页）。
+   * 不传 `cursor` 即取第一页；用上一页返回的 `pageInfo.nextCursor` 取下一页。
+   * 游标对前端不透明，只做原样回传。
+   */
+  listRequirements: (
+    q: { state?: string; scope?: string; keyword?: string; limit?: number; cursor?: string } = {},
+  ) => {
     const p = new URLSearchParams();
     if (q.state) p.set('state', q.state);
     if (q.scope) p.set('scope', q.scope);
     if (q.keyword) p.set('keyword', q.keyword);
+    if (q.limit !== undefined) p.set('limit', String(q.limit));
+    if (q.cursor) p.set('cursor', q.cursor);
     const qs = p.toString();
-    return request<RequirementListItem[]>(`/requirements${qs ? `?${qs}` : ''}`);
+    return request<RequirementListPage>(`/requirements${qs ? `?${qs}` : ''}`);
   },
 
   detail: (id: string) => request<RequirementDetail>(`/requirements/${id}`),

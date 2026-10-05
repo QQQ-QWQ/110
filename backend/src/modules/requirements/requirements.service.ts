@@ -10,6 +10,7 @@ import {
   assertNonBlank,
 } from '../../domain/invariants';
 import { assertCanRead, roleOf } from '../../domain/policy';
+import { buildPageInfo, decodeCursor, normalizeLimit } from '../../domain/pagination';
 import {
   CommandType,
   EVENT_TYPE,
@@ -26,6 +27,12 @@ export interface ListFilters {
   keyword?: string;
 }
 
+/** 分页参数，取自查询串（因此是未解析的字符串） */
+export interface ListPage {
+  limit?: string;
+  cursor?: string;
+}
+
 @Injectable()
 export class RequirementsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -33,11 +40,19 @@ export class RequirementsService {
   // ────────────────────────────── 读 ──────────────────────────────
 
   /**
-   * 列表：可见性在 **SQL 层**过滤。
+   * 列表：可见性在 **SQL 层**过滤，并做**键集游标分页**。
+   *
    * 注意 AND 数组包裹 OR —— 若写成 `proposer = ? OR assignee = ? AND state = ?`，
    * 由于 AND 优先级高于 OR，状态筛选会完全失效。
+   *
+   * 分页动机：这是唯一会随数据量**线性恶化**的读路径。此前 `findMany` 无
+   * `take`/`skip`，返回当前用户可见的全部需求，响应体与查询耗时都没有上界。
    */
-  async list(userId: string, filters: ListFilters) {
+  async list(userId: string, filters: ListFilters, page: ListPage = {}) {
+    const limit = normalizeLimit(page.limit);
+    const cursor =
+      page.cursor === undefined || page.cursor === '' ? null : decodeCursor(String(page.cursor));
+
     const conditions: Prisma.RequirementWhereInput[] = [
       { OR: [{ proposerId: userId }, { assigneeId: userId }] },
     ];
@@ -55,9 +70,25 @@ export class RequirementsService {
       conditions.push({ title: { contains: filters.keyword.trim(), mode: 'insensitive' } });
     }
 
+    // 键集分页：以 (createdAt, id) 复合游标做「严格小于」比较。
+    // 之所以不用 Prisma 的 cursor/skip 语法：那要求游标指向的行**仍然存在**，
+    // 而它完全可能刚被删除；显式比较不依赖这一点。
+    if (cursor) {
+      conditions.push({
+        OR: [
+          { createdAt: { lt: cursor.createdAt } },
+          { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+        ],
+      });
+    }
+
     const rows = await this.prisma.requirement.findMany({
       where: { AND: conditions },
-      orderBy: { createdAt: 'desc' },
+      // 决胜键 id 必须与 createdAt 一起参与排序：只按 createdAt 排时，
+      // 同一毫秒创建的多行顺序不稳定，翻页会出现重复或遗漏。
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      // 多取一行用于判断「是否还有下一页」，避免额外一次 count 查询
+      take: limit + 1,
       include: {
         proposer: { select: { id: true, name: true, account: true } },
         assignee: { select: { id: true, name: true, account: true } },
@@ -70,25 +101,31 @@ export class RequirementsService {
       },
     });
 
-    return rows.map((row) => {
-      const role = roleOf(userId, row);
-      const state = row.state as RequirementState;
-      return {
-        id: row.id,
-        title: row.title,
-        state: row.state,
-        stateLabel: STATE_LABEL[state],
-        rowVersion: row.rowVersion,
-        proposer: row.proposer,
-        assignee: row.assignee,
-        criteriaCount: row.criteria.length,
-        latestSubmissionNo: row.submissions[0]?.submissionNo ?? null,
-        myRole: role,
-        nextActions: nextActionsFor(state, role),
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-      };
-    });
+    const hasMore = rows.length > limit;
+    const pageRows = hasMore ? rows.slice(0, limit) : rows;
+
+    return {
+      items: pageRows.map((row) => {
+        const role = roleOf(userId, row);
+        const state = row.state as RequirementState;
+        return {
+          id: row.id,
+          title: row.title,
+          state: row.state,
+          stateLabel: STATE_LABEL[state],
+          rowVersion: row.rowVersion,
+          proposer: row.proposer,
+          assignee: row.assignee,
+          criteriaCount: row.criteria.length,
+          latestSubmissionNo: row.submissions[0]?.submissionNo ?? null,
+          myRole: role,
+          nextActions: nextActionsFor(state, role),
+          createdAt: row.createdAt,
+          updatedAt: row.updatedAt,
+        };
+      }),
+      pageInfo: buildPageInfo(limit, hasMore, pageRows[pageRows.length - 1]),
+    };
   }
 
   /** 详情：含验收条件、当前提交、历次提交与反馈、完整事件时间线、下一步操作 */

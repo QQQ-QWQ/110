@@ -158,7 +158,10 @@ describe('写请求契约', () => {
   });
 
   it('listRequirements：筛选条件进入查询串', async () => {
-    const spy = stubFetch(200, []);
+    const spy = stubFetch(200, {
+      items: [],
+      pageInfo: { limit: 20, hasMore: false, nextCursor: null },
+    });
 
     await api.listRequirements({ scope: 'proposed', state: 'PENDING', keyword: '导出' });
 
@@ -167,5 +170,29 @@ describe('写请求契约', () => {
     expect(url).toContain('scope=proposed');
     expect(url).toContain('state=PENDING');
     expect(url).toContain(encodeURIComponent('导出'));
+  });
+
+  it('listRequirements：limit 与 cursor 进入查询串（游标原样回传，不解析）', async () => {
+    const spy = stubFetch(200, {
+      items: [],
+      pageInfo: { limit: 5, hasMore: false, nextCursor: null },
+    });
+
+    await api.listRequirements({ limit: 5, cursor: 'eyJ0IjoieCJ9' });
+
+    const url = spy.mock.calls[0][0];
+    expect(url).toContain('limit=5');
+    expect(url).toContain(`cursor=${encodeURIComponent('eyJ0IjoieCJ9')}`);
+  });
+
+  it('listRequirements：不传 cursor 时查询串不含该参数（取第一页）', async () => {
+    const spy = stubFetch(200, {
+      items: [],
+      pageInfo: { limit: 20, hasMore: false, nextCursor: null },
+    });
+
+    await api.listRequirements({});
+
+    expect(spy.mock.calls[0][0]).not.toContain('cursor=');
   });
 });

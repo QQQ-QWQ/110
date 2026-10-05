@@ -29,6 +29,20 @@ export interface RequirementListItem {
   updatedAt: string;
 }
 
+/** 游标分页信息（与后端 domain/pagination.ts 的 PageInfo 对应） */
+export interface PageInfo {
+  limit: number;
+  hasMore: boolean;
+  /** 下一页游标；没有下一页时为 null */
+  nextCursor: string | null;
+}
+
+/** 列表接口的响应：数组已改为「一页 + 分页信息」 */
+export interface RequirementListPage {
+  items: RequirementListItem[];
+  pageInfo: PageInfo;
+}
+
 export interface Criterion {
   id: string;
   seq: number;

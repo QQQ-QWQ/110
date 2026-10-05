@@ -47,6 +47,14 @@ const loading = ref(true);
 const loadError = ref('');
 const busyId = ref<string | null>(null);
 
+// ── 游标分页 ──
+// 列表此前一次性返回全部数据，是唯一会随数据量线性恶化的读路径。
+// 现在按页取，「加载更多」时用上一页返回的游标续取。
+const PAGE_SIZE = 20;
+const nextCursor = ref<string | null>(null);
+const hasMore = ref(false);
+const loadingMore = ref(false);
+
 const filters = reactive({
   scope: 'all' as 'all' | 'proposed' | 'assigned',
   state: '' as '' | 'PENDING' | 'IN_PROGRESS' | 'IN_REVIEW' | 'COMPLETED',
@@ -79,20 +87,52 @@ const activeFilterCount = computed(() => {
   return count;
 });
 
+/** 当前筛选条件 + 每页条数（翻页时复用，保证游标与筛选条件一致） */
+function currentQuery() {
+  return {
+    scope: filters.scope,
+    state: filters.state || undefined,
+    keyword: filters.keyword.trim() || undefined,
+    limit: PAGE_SIZE,
+  };
+}
+
+/** 重新加载**第一页**：筛选变化、刷新、写操作之后都走这里 */
 async function load(): Promise<void> {
   loading.value = true;
   loadError.value = '';
   try {
-    items.value = await api.listRequirements({
-      scope: filters.scope,
-      state: filters.state || undefined,
-      keyword: filters.keyword.trim() || undefined,
-    });
+    const page = await api.listRequirements(currentQuery());
+    items.value = page.items;
+    nextCursor.value = page.pageInfo.nextCursor;
+    hasMore.value = page.pageInfo.hasMore;
   } catch (e) {
     items.value = [];
+    nextCursor.value = null;
+    hasMore.value = false;
     loadError.value = e instanceof ApiError ? e.message : '加载失败，请稍后重试';
   } finally {
     loading.value = false;
+  }
+}
+
+/**
+ * 追加下一页。
+ * 失败时**保留已加载内容**，只用 toast 提示 —— 否则一次翻页失败会把用户
+ * 已经看到的列表清空，这比不加载更糟。
+ */
+async function loadMore(): Promise<void> {
+  if (!hasMore.value || !nextCursor.value || loadingMore.value) return;
+  loadingMore.value = true;
+  try {
+    const page = await api.listRequirements({ ...currentQuery(), cursor: nextCursor.value });
+    items.value = [...items.value, ...page.items];
+    nextCursor.value = page.pageInfo.nextCursor;
+    hasMore.value = page.pageInfo.hasMore;
+  } catch (e) {
+    toast.error(e instanceof ApiError ? e.message : '加载更多失败，请稍后重试');
+  } finally {
+    loadingMore.value = false;
   }
 }
 
@@ -297,7 +337,9 @@ async function submitCreate(): Promise<void> {
       </EmptyState>
 
       <div v-else-if="items.length > 0">
-        <div class="faint small" style="padding: 12px 20px 0">共 {{ items.length }} 条需求</div>
+        <div class="faint small" style="padding: 12px 20px 0">
+          已显示 {{ items.length }} 条需求{{ hasMore ? '（还有更多）' : '' }}
+        </div>
         <div
           v-for="item in items"
           :key="item.id"
@@ -336,6 +378,14 @@ async function submitCreate(): Promise<void> {
             </BaseButton>
             <BaseButton size="sm" variant="ghost" @click="openDetail(item.id)">详情</BaseButton>
           </div>
+        </div>
+
+        <!-- 分页脚注：还有下一页时给按钮，否则明确告知已到底 -->
+        <div style="padding: 16px 20px; text-align: center">
+          <BaseButton v-if="hasMore" :loading="loadingMore" @click="loadMore">
+            {{ loadingMore ? '加载中…' : '加载更多' }}
+          </BaseButton>
+          <span v-else class="faint small">已显示全部 {{ items.length }} 条</span>
         </div>
       </div>
     </div>

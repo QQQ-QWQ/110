@@ -79,8 +79,12 @@ if (/^0+$/.test(base)) {
 }
 if (git('cat-file', '-e', `${base}^{commit}`).code !== 0) {
   skipInCi(
-    `基准提交 ${base.slice(0, 12)} 在本地不可达（浅克隆？）`,
-    '该 job 的 actions/checkout 需要加 `with: fetch-depth: 0`，否则历史里没有基准提交',
+    `基准提交 ${base.slice(0, 12)} 在本地不可达`,
+    '两种可能：① 该 job 的 actions/checkout 缺 `with: fetch-depth: 0`，历史里没有基准提交；' +
+      '② 有人 **force-push** 改写了历史，`event.before` 指向的提交已不在任何分支上。' +
+      '第 ② 种情况**刻意选择失败而不是放行** —— force-push 恰恰是最可能悄悄改写' +
+      '「已应用迁移」的操作，此时放行等于在最需要检查的时刻把门禁关掉。' +
+      '修法：确认迁移文件未被改写后，做一次**普通推送**（新提交的 before 是可达的），本条即会正常执行。',
   );
 }
 

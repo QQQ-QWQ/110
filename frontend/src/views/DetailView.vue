@@ -19,6 +19,7 @@ import SubmissionCard from '../components/SubmissionCard.vue';
 import { COMMAND_LABEL } from '../types';
 import type { CommandType, RequirementDetail, ReviewPayload } from '../types';
 import { formatDateTime } from '../utils/format';
+import AppIcon from '../components/AppIcon.vue';
 import {
   countCodePoints,
   fieldFromServerMessage,
@@ -230,7 +231,7 @@ async function doReview(payload: ReviewPayload): Promise<void> {
   <main id="main-content" class="page">
     <div class="mb-1">
       <BaseButton size="sm" variant="ghost" @click="router.push({ name: 'list' })">
-        ← 返回列表
+        <AppIcon name="back" /> 返回列表
       </BaseButton>
     </div>
 
@@ -252,35 +253,116 @@ async function doReview(payload: ReviewPayload): Promise<void> {
     </div>
 
     <template v-else>
-      <!-- 头部：标题 / 状态 / 角色 / 元信息 / 动作 / 下一步 -->
-      <section class="card">
+      <!-- 标题卡**全宽置顶**：三档断点下它都是第一眼看到的内容。
+           方案 §6.3 把主栏定义为「问题说明 → 验收条件 → 提交与验收记录 → 操作留痕」，
+           标题不在其中 —— 放在双栏之上，既保证信息层级（标题先于一切），
+           又让平板档的横向操作条能落在「标题之下、正文之上」这个正确位置。 -->
+      <section class="card detail-titlebar">
         <div class="detail-head">
           <div class="list-item-title" style="margin-bottom: 0">
             <h1 class="detail-title">{{ detail.title }}</h1>
             <StatusBadge :state="detail.state" :label="detail.stateLabel" />
             <RoleTag :role="detail.myRole" />
           </div>
+        </div>
+      </section>
 
-          <div class="meta-grid">
-            <div class="meta-item">
-              <div class="k">提出者</div>
-              <div class="v">{{ detail.proposer.name }}（{{ detail.proposer.account }}）</div>
+      <!-- 双栏（方案 §6.2/§6.3）：
+           主栏放「阅读与追溯」这类需要宽行的内容；侧栏放「元信息 + 动作 + 下一步」，
+           桌面下 sticky —— 用户读到提交记录时动作按钮仍然可见，不必回滚。
+           断点行为全部由 CSS 承担（components.css + responsive.css），模板只有这一份。 -->
+      <div class="detail-layout">
+        <!-- ───────── 主栏 ───────── -->
+        <div class="detail-main">
+          <section class="card">
+            <div class="card-body">
+              <h3 class="mb-1" style="font-size: 13px; color: var(--c-text-muted)">
+                问题与内容说明
+              </h3>
+              <div class="prose">{{ detail.description }}</div>
             </div>
-            <div class="meta-item">
-              <div class="k">负责人</div>
-              <div class="v">{{ detail.assignee.name }}（{{ detail.assignee.account }}）</div>
+          </section>
+
+          <!-- 验收条件 -->
+          <section class="card">
+            <div class="card-head">
+              <h3>验收条件（{{ detail.criteria.length }} 条）</h3>
+              <span class="faint small">开始处理后冻结，双方以此为唯一标准</span>
             </div>
-            <div class="meta-item">
-              <div class="k">版本号（row_version）</div>
-              <div class="v mono">{{ detail.rowVersion }}</div>
+            <div class="card-body">
+              <CriteriaList :criteria="detail.criteria" />
             </div>
-            <div class="meta-item">
-              <div class="k">最近更新</div>
-              <div class="v">{{ formatDateTime(detail.updatedAt) }}</div>
+          </section>
+
+          <!-- 提交与验收记录 -->
+          <section class="card">
+            <div class="card-head">
+              <h3>提交与验收记录（{{ detail.submissionsTotal }} 次提交）</h3>
+              <span class="faint small">每次提交独立保留，旧记录不被覆盖</span>
+            </div>
+            <div class="card-body">
+              <div v-if="detail.submissionsTotal === 0" class="faint small">
+                负责人还没有提交成果。提交后这里会按版本（V1、V2…）逐次列出，
+                每次独立保留，旧版本不会被覆盖。
+              </div>
+
+              <!-- 服务端只返回最近若干次提交（响应有界）；确实被截断时如实说明，
+                   而不是把截断藏起来让人以为「就这么多」 -->
+              <p v-if="detail.submissionsHasMore" class="faint small">
+                仅显示最近 {{ detail.submissions.length }} 次提交，完整记录请通过历史接口查看。
+              </p>
+
+              <SubmissionCard
+                v-for="submission in detail.submissions"
+                :key="submission.id"
+                :submission="submission"
+                :is-current="submission.id === detail.currentSubmissionId"
+                :criterion-text="criterionText"
+              />
+            </div>
+          </section>
+
+          <!-- 操作留痕 -->
+          <section class="card">
+            <div class="card-head">
+              <h3>操作留痕（{{ detail.eventsTotal }} 条事件）</h3>
+              <span class="faint small">追加式记录，不可篡改</span>
+            </div>
+            <div class="card-body">
+              <p v-if="detail.eventsHasMore" class="faint small">
+                仅显示最近 {{ detail.events.length }} 条（共 {{ detail.eventsTotal }} 条），
+                更早的记录请通过历史接口查看。
+              </p>
+              <EventTimeline :events="detail.events" />
+            </div>
+          </section>
+        </div>
+
+        <!-- ───────── 侧栏：元信息 → 动作 → 下一步引导 ───────── -->
+        <aside class="detail-side">
+          <div class="card detail-meta">
+            <div class="meta-grid">
+              <div class="meta-item">
+                <div class="k">提出者</div>
+                <div class="v">{{ detail.proposer.name }}（{{ detail.proposer.account }}）</div>
+              </div>
+              <div class="meta-item">
+                <div class="k">负责人</div>
+                <div class="v">{{ detail.assignee.name }}（{{ detail.assignee.account }}）</div>
+              </div>
+              <div class="meta-item">
+                <div class="k">版本号（row_version）</div>
+                <div class="v mono">{{ detail.rowVersion }}</div>
+              </div>
+              <div class="meta-item">
+                <div class="k">最近更新</div>
+                <div class="v">{{ formatDateTime(detail.updatedAt) }}</div>
+              </div>
             </div>
           </div>
 
-          <div v-if="detail.nextActions.length > 0" class="row mt-2">
+          <!-- 移动端这一块会变成「底部固定操作条」（见 responsive.css） -->
+          <div v-if="detail.nextActions.length > 0" class="card detail-actions">
             <BaseButton v-if="can('EDIT')" :disabled="busy" @click="openEdit">
               {{ COMMAND_LABEL.EDIT }}
             </BaseButton>
@@ -299,71 +381,15 @@ async function doReview(payload: ReviewPayload): Promise<void> {
             </BaseButton>
           </div>
 
-          <div class="mt-2">
+          <div class="detail-next">
             <NextStepCard
               :state="detail.state"
               :my-role="detail.myRole"
               :next-actions="detail.nextActions"
             />
           </div>
-        </div>
-
-        <div class="card-body">
-          <h3 class="mb-1" style="font-size: 13px; color: var(--c-text-muted)">问题与内容说明</h3>
-          <div class="prose">{{ detail.description }}</div>
-        </div>
-      </section>
-
-      <!-- 验收条件 -->
-      <section class="card">
-        <div class="card-head">
-          <h3>验收条件（{{ detail.criteria.length }} 条）</h3>
-          <span class="faint small">开始处理后冻结，双方以此为唯一标准</span>
-        </div>
-        <div class="card-body">
-          <CriteriaList :criteria="detail.criteria" />
-        </div>
-      </section>
-
-      <!-- 提交与验收记录 -->
-      <section class="card">
-        <div class="card-head">
-          <h3>提交与验收记录（{{ detail.submissionsTotal }} 次提交）</h3>
-          <span class="faint small">每次提交独立保留，旧记录不被覆盖</span>
-        </div>
-        <div class="card-body">
-          <div v-if="detail.submissionsTotal === 0" class="faint small">负责人尚未提交成果。</div>
-
-          <!-- 服务端只返回最近若干次提交（响应有界）；确实被截断时如实说明，
-               而不是把截断藏起来让人以为「就这么多」 -->
-          <p v-if="detail.submissionsHasMore" class="faint small">
-            仅显示最近 {{ detail.submissions.length }} 次提交，完整记录请通过历史接口查看。
-          </p>
-
-          <SubmissionCard
-            v-for="submission in detail.submissions"
-            :key="submission.id"
-            :submission="submission"
-            :is-current="submission.id === detail.currentSubmissionId"
-            :criterion-text="criterionText"
-          />
-        </div>
-      </section>
-
-      <!-- 操作留痕 -->
-      <section class="card">
-        <div class="card-head">
-          <h3>操作留痕（{{ detail.eventsTotal }} 条事件）</h3>
-          <span class="faint small">追加式记录，不可篡改</span>
-        </div>
-        <div class="card-body">
-          <p v-if="detail.eventsHasMore" class="faint small">
-            仅显示最近 {{ detail.events.length }} 条（共 {{ detail.eventsTotal }} 条），
-            更早的记录请通过历史接口查看。
-          </p>
-          <EventTimeline :events="detail.events" />
-        </div>
-      </section>
+        </aside>
+      </div>
     </template>
 
     <!-- 编辑需求 -->

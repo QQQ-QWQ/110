@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppIcon from './AppIcon.vue';
 import { useToast } from '../composables/useToast';
 
 /**
@@ -17,7 +18,7 @@ const { toasts, dismiss } = useToast();
         <span class="toast-dot" aria-hidden="true" />
         <span class="toast-msg">{{ t.message }}</span>
         <button class="toast-close" type="button" aria-label="关闭提示" @click="dismiss(t.id)">
-          ×
+          <AppIcon name="close" />
         </button>
       </div>
     </div>

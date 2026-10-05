@@ -132,18 +132,20 @@ describe('CriteriaList', () => {
     expect(html).toContain('>3<');
   });
 
-  it('传入 checks 时渲染 ✓ / ✗，未传入时不出现检查标记', async () => {
+  it('传入 checks 时渲染勾选 / 未勾选图标，未传入时不出现检查标记', async () => {
     const withChecks = await render(CriteriaList, {
       criteria,
       checks: { c1: true, c2: false, c3: true },
     });
-    expect(withChecks.html).toContain('✓');
-    expect(withChecks.html).toContain('✗');
+    // 断言的是**语义**（aria-label）而不是某个字形 —— 图标从 emoji 换成内联 SVG 时
+    // 这条测试不该跟着改。字形断言会把「实现细节」写进测试里。
+    expect(withChecks.html).toContain('aria-label="通过"');
     expect(withChecks.html).toContain('aria-label="未通过"');
+    // 结构上确认渲染的是 SVG 图标而非文字
+    expect(withChecks.html).toContain('class="icon"');
 
     const readonly = await render(CriteriaList, { criteria });
-    expect(readonly.html).not.toContain('✓');
-    expect(readonly.html).not.toContain('✗');
+    expect(readonly.html).not.toContain('class="icon"');
   });
 });
 
@@ -198,8 +200,8 @@ describe('SubmissionCard：单次提交独立留痕', () => {
     expect(html).toContain('退回修改');
     expect(html).toContain('第 2 条未实现');
     expect(html).toContain('1. 支持按状态筛选');
-    expect(html).toContain('✓');
-    expect(html).toContain('✗');
+    expect(html).toContain('class="pass check-mark"');
+    expect(html).toContain('class="fail check-mark"');
     expect(html).toContain('当前提交');
   });
 
@@ -218,7 +220,7 @@ describe('SubmissionCard：单次提交独立留痕', () => {
       isCurrent: true,
       criterionText: {},
     });
-    expect(html).toContain('该提交尚未验收');
+    expect(html).toContain('这一版还没有验收结论');
   });
 });
 

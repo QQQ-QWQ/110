@@ -325,14 +325,14 @@ async function submitCreate(): Promise<void> {
 
       <EmptyState
         v-else-if="items.length === 0 && !loadError"
-        title="没有符合条件的需求"
+        :title="activeFilterCount > 0 ? '没有符合当前条件的需求' : '还没有与你相关的需求'"
         :desc="
           activeFilterCount > 0
-            ? '试试放宽筛选条件，或清空关键词后重新查询。'
-            : '仅显示与你相关（你提出或你负责）的需求。'
+            ? `当前有 ${activeFilterCount} 个筛选条件生效。放宽条件，或清空关键词后重新查询。`
+            : '列表只显示与你相关（你提出、或你负责）的需求。新建一条即可开始协作。'
         "
       >
-        <BaseButton v-if="activeFilterCount > 0" @click="resetFilters">重置筛选</BaseButton>
+        <BaseButton v-if="activeFilterCount > 0" @click="resetFilters">清空筛选条件</BaseButton>
         <BaseButton v-else variant="primary" @click="openCreate">新建第一条需求</BaseButton>
       </EmptyState>
 

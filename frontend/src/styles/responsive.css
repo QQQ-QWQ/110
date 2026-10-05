@@ -1,19 +1,28 @@
 /* ============================================================
- * responsive.css —— 响应式适配（三档断点）
+ * responsive.css —— 响应式适配（四档断点）
  *
- * 断点（与 tokens 中的注释一致，media query 无法使用变量，故写死）：
- *   mobile  : 宽度 < 640px      —— 单列、底部抽屉式弹窗、触控优先
- *   tablet  : 640px ~ 1023px    —— 紧凑双列、工具条换行
- *   desktop : ≥ 1024px          —— 默认（components.css 即桌面态）
+ * 断点取自《UI 设计方案》§9.1（media query 无法使用变量，故写死）：
+ *   超小屏 : 宽度 < 380px       —— 顶栏隐藏品牌文字、元信息降为单列
+ *   移动   : 380px ~ 767px      —— 单栏、底部抽屉式弹窗、底部固定操作条、触控优先
+ *   平板   : 768px ~ 1279px     —— 工具条换行、详情页侧栏横置为顶部操作条
+ *   桌面   : ≥ 1280px           —— 默认（components.css 即桌面态）+ 详情页双栏 sticky
+ *
+ * ⚠️ 这四档与 `composables/useBreakpoint.ts` 的阈值**必须一致** ——
+ * 两套断点各自漂移，迟早会出现「CSS 认为是移动端、JS 认为是平板」的错位。
  *
  * 策略：桌面优先编写，此处只做「降级覆盖」，避免样式分散。
  * ============================================================ */
 
-/* ───────── 平板：640px ~ 1023px ───────── */
+/* ───────── 平板：768px ~ 1279px ───────── */
 
-@media (max-width: 1023px) {
+@media (max-width: 1279px) {
+  /* 平板：水平内边距 16px —— 覆盖令牌，而不是在 .page 里另写一个数字，
+     这样底部操作条的负外边距会自动跟着变 */
+  :root {
+    --pad-page-x: 16px;
+  }
   .page {
-    padding: var(--sp-5) var(--sp-4);
+    padding: var(--sp-5) var(--pad-page-x);
   }
 
   .toolbar {
@@ -35,11 +44,35 @@
   .toast-host {
     right: var(--sp-4);
   }
+
+  /* ── 详情页（方案 §6.2/§6.3）：侧栏折叠为**标题之下的横向操作条**，主栏占满 ──
+     用 order: -1 让它插到标题卡与主栏之间 —— 这是「顶部横向操作条」的正确落点：
+     在标题之上会把信息层级倒过来（先看到元信息再看标题）。 */
+  .detail-side {
+    order: -1;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+  .detail-side > * {
+    flex: 1 1 260px;
+  }
+  .detail-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+  .detail-actions .btn {
+    width: auto;
+  }
+  /* 横向排布后，元信息不必再挤成单列 */
+  .detail-meta .meta-grid {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
 }
 
-/* ───────── 移动端：< 640px ───────── */
+/* ───────── 移动端：< 768px ───────── */
 
-@media (max-width: 639px) {
+@media (max-width: 767px) {
   :root {
     /* 移动端整体收紧 */
     --h-topbar: 52px;
@@ -55,8 +88,12 @@
     display: none;
   }
 
+  /* 移动端：水平内边距 12px */
+  :root {
+    --pad-page-x: 12px;
+  }
   .page {
-    padding: var(--sp-4) var(--sp-3);
+    padding: var(--sp-4) var(--pad-page-x);
   }
 
   /* 工具条：纵向堆叠，筛选项占满整行 */
@@ -185,6 +222,43 @@
     width: 100%;
   }
 
+  /* ── 详情页（方案 §6.3）：单栏 + **底部固定操作条** ──
+     让侧栏的卡片直接参与外层排列（display: contents），再用 order 定位：
+     主栏 → 元信息 → 下一步引导 → 动作条。
+     动作条是最后一个元素，position: sticky; bottom: 0 才能一直贴在视口底部
+     （它的包含块是整个 .detail-layout，足够高，所以 sticky 有可粘的行程）。 */
+  .detail-side {
+    display: contents;
+  }
+  .detail-meta {
+    order: 1;
+  }
+  .detail-next {
+    order: 2;
+  }
+  .detail-actions {
+    order: 3;
+    position: sticky;
+    bottom: 0;
+    z-index: var(--z-topbar);
+    /* 撑满视口宽度：抵消 .page 的左右内边距。
+       这里**必须**用 --pad-page-x 而不是写死 16px —— 曾经写死过，结果在 380px 下
+       底部横条比屏幕宽 4px（该档的 .page 水平内边距是 12px，不是 16px）。 */
+    margin: 0 calc(var(--pad-page-x) * -1);
+    padding: var(--sp-3) var(--pad-page-x);
+    /* 兼容 iOS 安全区 —— 否则横条会被 Home Indicator 盖住 */
+    padding-bottom: max(var(--sp-3), env(safe-area-inset-bottom));
+    background: var(--c-surface);
+    border-top: 1px solid var(--c-border);
+    border-radius: 0;
+    box-shadow: var(--sh-2);
+  }
+  .detail-actions .btn {
+    width: 100%;
+    /* 触控目标 ≥44px（方案 §9.2） */
+    min-height: var(--tap-min);
+  }
+
   /* 提示条铺满顶部 */
   .toast-host {
     top: calc(var(--h-topbar) + var(--sp-2));
@@ -223,5 +297,29 @@
 
   .meta-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ───────── 桌面：≥ 1280px ─────────
+   这是**唯一一个 min-width 块** —— 因为详情页双栏是「桌面才启用」的增强，
+   而不是对更小屏的降级覆盖。其余规则仍保持桌面优先的写法（见文件头说明）。 */
+
+@media (min-width: 1280px) {
+  .detail-layout {
+    display: grid;
+    /* 主栏自适应 + 侧栏 192px（方案 §6.2）。minmax(0,1fr) 而非 1fr —— 
+       否则长 URL / 长标题会把主栏撑破 */
+    grid-template-columns: minmax(0, 1fr) 192px;
+    gap: var(--sp-5);
+    align-items: start;
+  }
+
+  /* sticky 侧栏：读到提交记录时动作按钮仍然可见（方案 §6.3 的核心改造） */
+  .detail-side {
+    position: sticky;
+    top: calc(var(--h-topbar) + var(--sp-4));
+    /* 侧栏比视口高时自己滚动，而不是把按钮推出屏幕 */
+    max-height: calc(100dvh - var(--h-topbar) - var(--sp-4) * 2);
+    overflow-y: auto;
   }
 }

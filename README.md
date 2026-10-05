@@ -192,6 +192,8 @@ docker compose up --build
 │   ├── install-git-hooks.mjs   # 安装 pre-push 钩子，让「记得跑 preflight」变成「自动跑」（C4 收尾）
 │   ├── check-audit.mjs         # 依赖漏洞扫描：阻断 high/critical，允许显式且有日期的例外（P3）
 │   ├── verify-design-tokens.mjs # 设计令牌与用色纪律（UI 方案 §10.3，CI frontend job 调用）
+│   ├── capture-screens.mjs     # 三档断点截图 + 横向滚动检测（CDP 驱动系统 Chrome，零依赖）
+│   ├── probe-login-saturation.mjs # 登录闸门饱和探测（E4，绕过 nginx 直连）
 │   ├── e2e.mjs                 # 端到端验证脚本（DEM-01~08 + DEM-11~16，一条命令产出对照表）
 │   └── verify-retention.mjs    # 数据保留清理的真实库验证（S1）
 │
@@ -226,6 +228,7 @@ docker compose up --build
 | --- | --- | --- |
 | 前端 | Vue 3 + TypeScript + Vite | 轻量、构建快；产物为纯静态文件 |
 | 前端样式 | 原生 CSS + **设计令牌单一落点** | 零 UI 框架依赖；令牌与用色纪律由 `scripts/verify-design-tokens.mjs` 在 CI 强制（见 `docs/UI设计方案.md`） |
+| 前端图标 | **内联 SVG**（6 个图形，`AppIcon.vue`） | 不用 emoji（跨平台外观不一致）、不引图标库（只需几个图形） |
 | 后端 | NestJS 11（Express）+ TypeScript | 模块化分层清晰，与前端共用同一语言 |
 | ORM | Prisma 6 | 迁移可审阅；复杂约束用**手写 SQL** 补充 |
 | 数据库 | PostgreSQL 16 | 事务 + `CHECK` 约束，把不变量下沉到存储层 |

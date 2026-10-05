@@ -18,7 +18,7 @@
   width: 100%;
   max-width: var(--w-page);
   margin: 0 auto;
-  padding: var(--sp-6);
+  padding: var(--sp-6) var(--pad-page-x);
   flex: 1;
 }
 
@@ -115,7 +115,9 @@
   background: var(--c-surface);
   border: 1px solid var(--c-border);
   border-radius: var(--r-lg);
-  box-shadow: var(--sh-1);
+  /* 方案 §3.2 第 1 条：**分层靠 1px 边框，阴影只用于浮层**。
+     卡片原先带 --sh-1，属于「浮层以外命中阴影」，已去掉 ——
+     这一条直接消除了「AI 感」里最常见的厚重投影。 */
 }
 
 .card + .card {
@@ -592,6 +594,59 @@
 .detail-head {
   padding: var(--sp-5);
   border-bottom: 1px solid var(--c-border);
+}
+
+/* ───────── 详情页双栏（方案 §6.2 / §6.3）─────────
+   默认（移动端）单栏：主栏在前、侧栏在后 —— 侧栏里的动作按钮因此在页面底部，
+   正好成为「底部固定操作条」（具体样式见 responsive.css）。
+   平板与桌面的两档变化全部由 responsive.css 承担，模板只有一份。 */
+.detail-layout {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.detail-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+  /* 防止宽内容（长 URL、长标题）把栅格撑破 —— grid/flex 子项默认 min-width:auto */
+  min-width: 0;
+}
+
+.detail-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+/* 栏内改用 flex gap 控制间距，取消 .card + .card 的外边距（否则会叠加） */
+.detail-main > .card + .card,
+.detail-side > .card + .card {
+  margin-top: 0;
+}
+
+.detail-meta {
+  padding: var(--sp-4);
+}
+
+/* 侧栏只有 192px，auto-fit minmax(170px) 会溢出 —— 这里固定单列 */
+.detail-meta .meta-grid {
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--sp-3);
+  margin-top: 0;
+}
+
+.detail-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+}
+
+/* 侧栏窄，按钮占满整宽；主操作在 DOM 里就是带 variant="primary" 的那个 */
+.detail-actions .btn {
+  width: 100%;
 }
 
 .detail-title {
@@ -1119,6 +1174,18 @@
 .mono {
   font-family: var(--font-mono);
   font-size: 12px;
+  /* 等宽数字：版本号变化时不会让同行文字左右跳 */
+  font-variant-numeric: tabular-nums;
+}
+
+/* 方案 §5.3 第 2 条要求「所有数字」用 tabular-nums。
+   下面这些位置渲染的是日期 / 条数 / 版本号 —— 它们会随状态刷新而变化，
+   比例数字会让整行文字轻微左右抖动。 */
+.meta-item .v,
+.list-item-meta,
+.tl-time,
+.submission-head {
+  font-variant-numeric: tabular-nums;
 }
 .text-right {
   text-align: right;

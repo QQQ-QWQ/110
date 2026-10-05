@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import AppIcon from './AppIcon.vue';
 import { useBodyScrollLock } from '../composables/useBodyScrollLock';
 import { useFocusTrap } from '../composables/useFocusTrap';
 
@@ -62,7 +63,7 @@ useFocusTrap(rootRef, open, close);
           <div class="modal-head">
             <h3>{{ title }}</h3>
             <button v-if="closable" class="icon-btn" type="button" aria-label="关闭" @click="close">
-              ×
+              <AppIcon name="close" />
             </button>
           </div>
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import AppIcon from './AppIcon.vue';
 import type { Submission } from '../types';
 import { formatDateTime } from '../utils/format';
 
@@ -60,14 +61,16 @@ defineProps<{
           <ul class="check-list">
             <li v-for="check in review.checks" :key="check.criterionId">
               <span class="check-mark" :class="check.passed ? 'pass' : 'fail'">
-                {{ check.passed ? '✓' : '✗' }}
+                <AppIcon :name="check.passed ? 'check' : 'cross'" />
               </span>
               <span>{{ criterionText[check.criterionId] ?? check.criterionId }}</span>
             </li>
           </ul>
         </div>
       </template>
-      <div v-else class="faint small mt-1">该提交尚未验收。</div>
+      <div v-else class="faint small mt-1">
+        这一版还没有验收结论。提出者逐项核对后会在此显示每条的通过情况。
+      </div>
     </div>
   </article>
 </template>

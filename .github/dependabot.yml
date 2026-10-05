@@ -70,8 +70,34 @@ updates:
     labels:
       - dependencies
     groups:
+      # lint 工具链必须**整套一起升**。反例已经真实发生过：Dependabot 把 eslint 单独
+      # 升到 10，而 typescript-eslint@8 的 peer 是 `eslint: ^8.57.0 || ^9.0.0` ——
+      # **不支持 eslint 10**，类型感知的规则集加载不了，CI 必然红（PR #2 因此被关闭）。
+      # 单独升其中任何一个（eslint / @eslint/js / typescript-eslint / eslint-plugin-vue /
+      # vue-eslint-parser / eslint-config-prettier / globals）都会遇到同类问题。
+      # 另一个真实例子：eslint-plugin-vue@10 要求 `vue-eslint-parser ^10.3.0`，
+      # 所以它必须与 vue-eslint-parser 一起升 —— 这正是 PR #4 一开始红、等 PR #5
+      # 合入后才变绿的原因。
+      lint-toolchain:
+        patterns:
+          - eslint
+          - '@eslint/js'
+          - typescript-eslint
+          - eslint-plugin-vue
+          - vue-eslint-parser
+          - eslint-config-prettier
+          - globals
+      # 其余依赖：minor / patch 合成一个 PR（major 会被排除，单独开）
       minor-and-patch:
         patterns: ['*']
+        exclude-patterns:
+          - eslint
+          - '@eslint/js'
+          - typescript-eslint
+          - eslint-plugin-vue
+          - vue-eslint-parser
+          - eslint-config-prettier
+          - globals
         update-types: ['minor', 'patch']
     ignore:
       # vitest 4 → 5 是破坏性升级（已知的 moderate 漏洞需要它才能修），

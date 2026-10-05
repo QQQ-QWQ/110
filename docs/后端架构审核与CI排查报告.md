@@ -13,8 +13,8 @@
 | **CI 为何持续失败** | **两个独立根因**，而非 5 个 job 各自的问题：① `schema.prisma` 的 `@relation` 属性跨行书写，Prisma 解析器不支持 → 同时打红「后端」与「迁移可回放性」两个 job；② 「后端」job 的 `prisma validate` 步骤缺 `DATABASE_URL` → 即使修好①该步骤仍会红。 |
 | **当前状态** | **已修复并验证**：commit `603cedc` 推送后 CI 由「4 次全红」转绿，此后 run #6 ~ #16 **连续全绿**。最新 run #16（`a31fa25`）为 **6 个 job、65 个步骤全部 success**（唯一 skipped 的是 `if: failure()` 的日志步骤，按设计跳过）。 |
 | **可扩展性** | 读路径曾有 **2 处会随数据量线性恶化**的无界查询（列表无分页、详情含无界事件流）—— **两处均已修复**（E1 键集分页 / E2 详情与历史分页）；横向扩展曾有 **2 个硬阻塞**（`container_name` 阻断 `--scale`、nginx 不在运行时重解析 DNS）—— 已解除（E3，其中 nginx 部分仅结构校验）。写路径（乐观锁 + 幂等）本身是可横向扩展的。 |
-| **稳定性** | 核心写路径的事务/幂等/乐观锁设计是**扎实的**；主要缺口在**运维面**：幂等记录与会话过期行无清理（无界增长）、连接池与语句超时未显式配置、无 request-id 关联日志、`web` 未等服务健康即启动、liveness 与 readiness 混为一谈。**前三项已修复**（S1 / S2 / S5），后两项也已落地（S3 / S6，见 §6，其中 S3 仅结构校验）。 |
-| **最高优先级动作** | **P0 共 6 项已全部落地**（见 §6）：CI 起服务跑 e2e、列表游标分页、数据保留清理、连接池与超时、解除横向扩展阻塞、迁移漂移检测。5 项有自动化验证（单测 / 真实数据库 / e2e / CI）；**唯一例外是 E3 的 nginx 改动**，只做了结构解析校验（本环境无 Docker 引擎与 nginx 二进制）。**P1 已全部落地**：C4 本地前置检查（§7.1）、S5 请求编号贯穿日志（§7.2）、E2 详情/历史分页（§7.3）、E4 登录并发闸门（§7.4）、S3 `web` 等服务健康（仅结构校验）。**P2 已完成三项**：S6 liveness/readiness 拆分（§7.5，有停库实测）、C3 已应用迁移不可修改（§7.6，本地双向验证）、C5 分支保护声明（§6.3.1，文档项）。剩余：S7 登录限流；E5 会话缓存**不建议做**（与「登出即时失效」冲突）。 |
+| **稳定性** | 核心写路径的事务/幂等/乐观锁设计是**扎实的**；主要缺口在**运维面**：幂等记录与会话过期行无清理（无界增长）、连接池与语句超时未显式配置、无 request-id 关联日志、`web` 未等服务健康即启动、liveness 与 readiness 混为一谈。**前三项已修复**（S1 / S2 / S5），后两项也已落地（S3 / S6，见 §6，其中 S3 仅结构校验）。**登录路径另加两道防护**：并发闸门（E4，容量 → 503）与失败限流（S7，配额 → 429）。 |
+| **最高优先级动作** | **P0 共 6 项已全部落地**（见 §6）：CI 起服务跑 e2e、列表游标分页、数据保留清理、连接池与超时、解除横向扩展阻塞、迁移漂移检测。5 项有自动化验证（单测 / 真实数据库 / e2e / CI）；**唯一例外是 E3 的 nginx 改动**，只做了结构解析校验（本环境无 Docker 引擎与 nginx 二进制）。**P1 已全部落地**：C4 本地前置检查（§7.1）、S5 请求编号贯穿日志（§7.2）、E2 详情/历史分页（§7.3）、E4 登录并发闸门（§7.4）、S3 `web` 等服务健康（仅结构校验）。**P2 已完成四项**：S6 liveness/readiness 拆分（§7.5，有停库实测）、C3 已应用迁移不可修改（§7.6，双向本地验证）、C5 分支保护声明（§6.3.1，文档项）、S7 登录限流（§7.7，有手工确认的 429 响应）。**唯一不建议做的是 E5 会话缓存** —— 它与「登出即时失效」直接冲突。 |
 
 ---
 
@@ -477,7 +477,7 @@ if npx prisma migrate deploy; then ...
 | S4 | **entrypoint 错误可诊断** | 输出 `migrate deploy` 完整 stderr；区分连接类/SQL 类错误，后者立即失败。 | 见 4.2-⑤：错误分类依赖 stderr 文本匹配，略脆弱；「打印真实错误」是纯收益。 |
 | S5 | ✅ **已落地** | `core/request-id.ts`：中间件生成/透传 `X-Request-Id`（响应头始终回传），访问日志与异常过滤器输出该编号，**5xx 的响应体里也带上它**。 | 见 4.2-⑥：采用轻量版（只改过滤器与日志），**未**引入 AsyncLocalStorage / nestjs-cls —— 那要改动所有 service 的签名，而本项目没有跨多层异步的日志关联需求。透传的入参需通过安全校验（可见 ASCII、≤128 字符）：编号会进日志行，不加限制就是日志注入与日志撑爆两个口子。 |
 | S6 | ✅ **已落地** | `/api/health/live`（**不碰数据库**，只证明进程能响应）与 `/api/health/ready`（真实探测数据库，不可用 → **503** 而非 500）；`/api/health` 保留为 readiness 的别名。 | 见 4.2-⑦。**已实测**：停掉数据库后 `/health/live` 仍 200、`/health/ready` 与 `/health` 返回 503（见 §7.5）。这个差异不是形式主义 —— 把数据库检查放进 liveness，数据库一抖编排系统就会**重启进程**，而重启对「数据库不可用」毫无帮助，只会让恢复更慢。 |
-| S7 | **登录限流** | 按账号 + IP 的失败计数与短时封禁（内存实现）。 | 与 E4 合并实现。内存实现意味着多副本下计数不共享，防护强度下降 —— 对本题规模可接受，若需强一致则应落库。 |
+| S7 | ✅ **已落地** | `domain/login-throttle.ts`（纯逻辑，时钟注入）+ `AuthService.login()` 的**第一步**检查。键 = **账号 + 客户端 IP**；默认 5 次 / 10 分钟窗口 / 封禁 5 分钟；超限 → **429 + `Retry-After`**。成功即清零。 | 见下方取舍。**429 与 503 刻意分开**：429 是「调用方配额」（别再试了），503 是「服务端容量」（稍后再试）—— 混用会让客户端无法判断该退避还是该停止。⚠️ 已知局限两条：① **分布式攻击（多 IP 打同一账号）能绕开组合键**；② **内存实现**，多副本下各副本各自计数，防护强度下降（强一致需落库或 Redis）。 |
 
 ### 5.3 CI 流程改进
 
@@ -488,7 +488,7 @@ if npx prisma migrate deploy; then ...
 | C3 | ✅ **已落地** | `scripts/check-migrations-immutable.mjs` + `migrations` job 的一个步骤。判定规则刻意选最简的一条：`M`（修改）/`D`（删除）→ 违规；`A`（新增）→ 放行（新增正是迁移的工作方式）。用 `--no-renames` 把重命名拆成 A+D，于是重命名被 D 拦住。 | 需要与基准提交比对，因此该 job 的 checkout 加了 `fetch-depth: 0`。基准取法：PR 用 `base.sha`，push 用 `event.before`。**首次推送的 `before` 是全零 SHA** → 脚本**显式打印原因并跳过**（跳过 ≠ 通过，绝不静默放行）。代价：浅克隆改全量克隆，checkout 略慢。 |
 | C4 | ✅ **已落地** | `scripts/preflight.mjs`：一键复跑 CI 的机械检查。**并且 CI 的 `hygiene` job 直接调用它**（`--mechanical`），于是「本地 preflight 绿」与「CI hygiene 绿」是同一件事，不存在两套会漂移的检查。 | 把反馈周期从 3~5 分钟压到 **1 秒**。代价有两处，都已记录：① 这些检查在 CI 里合并成了一个步骤，粒度不如从前 —— 但这正是该脚本的意义（拿不到日志时本地跑一遍就能定位）；② 需要开发者记得跑，用 `pre-push` 钩子可强制，但钩子可被 `--no-verify` 绕过（设计使然，不是缺陷）。 |
 | C5 | ✅ **已落地（文档项）** | `docs/代码审查标准与流程.md` §6.3.1 明确 `main` 的 **6 个 required status checks**（与 `ci.yml` 的 6 个 job 一一对应）、以及「Require branches to be up to date」「禁止绕过」「禁止 force push」等配套约束。 | 仓库内的文档**无法**强制 GitHub 侧配置，这一点在文中如实标注了（「验收时需当场核对，不能『文档写了就算做了』」）。之所以仍要做：把「已配置分支保护」写成验收项，能确保它不被遗忘。另外文档里写清了「为什么恰好是这 6 个」—— required checks 多写一个不存在的名字会让 PR 永久卡住。 |
-| **C6** | ✅ **已落地**（**本轮新增，优先级最高**） | 新增 `e2e` job：postgres service → `prisma generate` + `migrate deploy` → `npm run build` → `node dist/seed.js` → 种子完整性断言 → `node dist/main.js` 等就绪 → `node scripts/e2e.mjs`（DEM-00~08 + DEM-11~15，87 项断言）。 | **这是唯一能拦住「跨层缺陷」的检查。** 见下方说明 —— 它的必要性已由本轮实跑直接证明。 |
+| **C6** | ✅ **已落地**（**本轮新增，优先级最高**） | 新增 `e2e` job：postgres service → `prisma generate` + `migrate deploy` → `npm run build` → `node dist/seed.js` → 种子完整性断言 → `node dist/main.js` 等就绪 → `node scripts/e2e.mjs`（DEM-00~08 + DEM-11~16，93 项断言）。 | **这是唯一能拦住「跨层缺陷」的检查。** 见下方说明 —— 它的必要性已由本轮实跑直接证明。 |
 
 **为什么 C6 的优先级最高（有实证）**
 
@@ -503,7 +503,7 @@ if npx prisma migrate deploy; then ...
 两者的共同点：**都只在服务真正跑起来时才暴露**。因此在 CI 里跑一遍 e2e
 不是「锦上添花」，而是补上了当前门禁体系中缺失的一整层。
 
-> **取舍**：该 job 会让 CI 时间显著增加（安装依赖 + 构建 + 起库 + 起服务 + 87 项断言，估 +2~3 分钟），
+> **取舍**：该 job 会让 CI 时间显著增加（安装依赖 + 构建 + 起库 + 起服务 + 93 项断言，估 +2~3 分钟），
 > 且需要维护「CI 里如何起服务」的编排逻辑（与 `docker compose` 存在重复）。
 
 **落地时的决定：没有按上面的建议用 `docker compose up`，而是用 postgres service + 直接运行编译产物。**
@@ -534,7 +534,7 @@ if npx prisma migrate deploy; then ...
 
 | 验证点 | 结果 |
 |---|---|
-| 新增 `e2e` job 在真实 runner 上跑通 | ✅ 6 个 step 全部 success（`Initialize containers` → 安装依赖 → generate/migrate/build/seed → 种子完整性断言 → 起 API 等就绪 → 44 项断言；**run #8 时点**，脚本后续扩展至 DEM-11~15 共 87 项，见 §7） |
+| 新增 `e2e` job 在真实 runner 上跑通 | ✅ 6 个 step 全部 success（`Initialize containers` → 安装依赖 → generate/migrate/build/seed → 种子完整性断言 → 起 API 等就绪 → 44 项断言；**run #8 时点**，脚本后续扩展至 DEM-11~16 共 93 项，见 §7） |
 | 是否拖慢流水线 | 该 job 约 **37 秒**（含 `npm ci`、`prisma generate`、`migrate deploy`、`nest build`、起库起服务与全部断言），远低于预估的 +2~3 分钟 —— 因为 `setup-node` 的 npm 缓存命中了 |
 | 是否引入不稳定 | 6 个 job 一次性全绿，无重试 |
 | 既有 5 个 job 是否受影响 | ❌ 无。run #8 中其余 5 个 job 结论与 run #7 一致 |
@@ -597,7 +597,7 @@ if npx prisma migrate deploy; then ...
 | **S6 liveness / readiness 拆分** | ✅ **已完成** —— 有停库实测（见 §7.5） |
 | **C3 已应用迁移不可修改** | ✅ **已完成** —— `scripts/check-migrations-immutable.mjs`；本地双向验证（改迁移 → 报违规；新增迁移目录 → 放行） |
 | **C5 分支保护声明** | ✅ **已完成（文档项）** —— §6.3.1 明确 6 个 required checks；⚠️ 无法从仓库证明 GitHub 侧已配置 |
-| S7 登录限流 | ⏳ 待做（可与 E4 合并实现） |
+| **S7 登录限流** | ✅ **已完成** —— 键 = 账号 + IP；5 次 / 10 分钟 → 封禁 5 分钟；429 + `Retry-After`；单测 15 条 + e2e DEM-16 共 6 项，见 §7.7 |
 | E5 会话缓存 | ⏳ **不建议做** —— 与「登出即时失效」直接冲突（见 §5.1 该行） |
 
 ### 明确**不**建议做的事
@@ -627,11 +627,11 @@ if npx prisma migrate deploy; then ...
 | P0 全部落地后 CI 全绿 | run #10（`c9017b9`）**6/6 job success，66 步骤**（新增「迁移漂移检测」与「数据保留清理验证」两步） |
 | E1 落地后 CI 全绿 | run #11（`d88e3b6`）**6/6 job success，66 步骤**（`端到端验证 DEM-00 ~ DEM-08 + DEM-11` 步骤 success） |
 | C6 失败会变红（链路核验） | `tail -20 scripts/e2e.mjs` → `process.exit(failures === 0 ? 0 : 1)`；Actions `run:` 默认 `bash -e` |
-| 后端本地门禁 | `npm run format:check` / `npm run lint` / `npm test`（**111/111**，含 retention 14 + pagination 19 + request-id 12 + semaphore 12 + health 4） |
+| 后端本地门禁 | `npm run format:check` / `npm run lint` / `npm test`（**126/126**，含 retention 14 + pagination 19 + request-id 12 + semaphore 12 + health 4 + login-throttle 15） |
 | C2 漂移检测双向验证 | 无漂移 → 退出码 0 `No difference detected.`；故意给 schema 加字段 → 退出码 2 `[+] Added column drift_probe_field` |
 | S1 真实库验证 | `node scripts/verify-retention.mjs` → 5/5 通过（含「PROCESSING 超 100h 必须保留」） |
 | S2 生效验证 | `SHOW statement_timeout` 由 `0` → `10s`（`options=-c%20statement_timeout%3D10000`） |
-| E1 端到端验证 | `node scripts/e2e.mjs` → **87 项断言 0 失败**（含 DEM-11 12 项 + DEM-12 5 项 + DEM-13 18 项 + DEM-14 3 项 + DEM-15 5 项） |
+| E1 端到端验证 | `node scripts/e2e.mjs` → **93 项断言 0 失败**（含 DEM-11 12 + DEM-12 5 + DEM-13 18 + DEM-14 3 + DEM-15 5 + DEM-16 6） |
 | C4 preflight 全绿 | `node scripts/preflight.mjs` → **8/8 通过**（机械层 5 项 + 工具层 3 项） |
 | C4 preflight 负例验证 | 逐项制造违规，**6/6 均被检出**（退出码 1，且只有该项报红）—— 矩阵见 §7.1 |
 | S5 请求编号单测 | `backend/test/request-id.test.js` 12 条（含「换行/控制字符必须被拒绝」与「5xx 响应体带 requestId、4xx 不带」） |
@@ -648,6 +648,9 @@ if npx prisma migrate deploy; then ...
 | S3 compose 结构校验 | `docker-compose config` → 退出码 0，`web.depends_on.api.condition: service_healthy`；`container_name` 计数 0。⚠️ 未起容器验证 |
 | C3 已应用迁移检测（双向） | 本地用临时分支实测：**改** `0001_init/migration.sql` → 退出码 1 并打印原因；**新增** `0003_probe/` 目录 → 退出码 0 且列为「新增（允许）」。三种跳过情形（无基准 / 全零 SHA / 不可达基准）均显式打印原因并退出 0 |
 | C5 分支保护清单 | `docs/代码审查标准与流程.md` §6.3.1 —— 6 个 required checks 与 `ci.yml` 的 6 个 job 一一对应 |
+| S7 限流单测 | `backend/test/login-throttle.test.js` 15 条：阈值、**到期后计数清零**（否则永久锁死）、**封禁期间失败不延长封禁**、成功清零、窗口过期、**同账号不同 IP 互不影响**（锁不能当武器）、**键数量有上限**、配置非法即抛错、**封禁期间连数据库都不查** |
+| S7 端到端 | e2e DEM-16 共 6 项：连续错误密码最终 429、429 之前一律 401、**一旦 429 不再回到 401**、**封禁期间换密码也 429**、429 带 `Retry-After`、**探测账号被封不影响其它账号** |
+| S7 手工确认响应 | `HTTP/1.1 429 Too Many Requests` + `Retry-After: 298` + `{"error":{"code":"TOO_MANY_REQUESTS","message":"登录失败次数过多，请 298 秒后再试"}}` |
 | CHECK 约束清单 | `grep -oE '"[a-z_]+_chk"' backend/prisma/migrations/0001_init/migration.sql \| sort -u` → 15 条 |
 | 幂等记录无清理（**审核时**，现已修复） | `grep -rn "idempotencyRecord" backend/src \| grep -iE "delete\|clean\|purge"` → 当时为空 |
 | 无分页（**审核时**，现已修复） | `grep -rn "take:\|skip:\|cursor" backend/src` → 当时为空 |
@@ -806,6 +809,48 @@ CI：  全零 SHA（分支首次推送）                          → 退出码
 无法证明 GitHub 侧已配置**。这一点在文中如实标注了 —— 验收时应打开
 `Settings → Branches → Branch protection rules` 当场核对，而不是「文档写了就算做了」。
 
+### 7.7 S7：为什么限流必须放在最前面，以及三条边界
+
+**位置很关键**：限流检查是 `AuthService.login()` 的**第一步**，在数据库查询与密码校验之前。
+两个好处：
+
+1. 这是最便宜的拒绝路径 —— 封禁期间连库都不查（单测里用桩 prisma 断言调用次数为 0）。
+2. **不泄露账号是否存在** —— 不存在的账号同样会被限流，因此无法用 429/401 的差异来探测。
+
+**三条容易写错的边界**（都有单测钉住）：
+
+| 边界 | 写错的后果 |
+| --- | --- |
+| 封禁**到期后计数必须清零** | 残留计数会让用户一解禁就又被立刻封禁 —— **永久锁死**，比不封禁更糟 |
+| 封禁期间再失败**不得延长封禁** | 「越试越久」会让封禁时间无上界，正常用户也等不到解禁 |
+| 成功登录**必须清零** | 否则「错几次后成功」被累计，用户下次正常登录会莫名 429 |
+
+**为什么键是「账号 + IP」的组合**（三种选择都试想过）：
+
+| 键 | 问题 |
+| --- | --- |
+| 只按账号 | 攻击者随便失败几次就能把真实用户**锁在门外** —— 拿别人的账号当武器 |
+| 只按 IP | 同一条出口 NAT 背后的所有人互相牵连；分布式攻击又能绕开 |
+| **账号 + IP（采用）** | 攻击者必须同时命中同一个账号**且**来自同一个 IP；而且**锁无法被用来把别人关在门外** |
+
+代价如实记录：**分布式攻击（多 IP 打同一账号）能绕开组合键**。更强的做法是再叠一层
+「按 IP 计数、阈值更高」的规则；本项目规模下先不做。
+
+**429 与 503 刻意分开**：429 是「调用方配额，别再试了」，503 是「服务端容量，稍后再试」。
+混用会让客户端无法判断该退避还是该停止。手工确认的响应：
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 298
+{"error":{"code":"TOO_MANY_REQUESTS","message":"登录失败次数过多，请 298 秒后再试"}}
+```
+
+**一条必须说明的局限**：**内存实现**，多副本部署时各副本各自计数，攻击者把请求分散到
+N 个副本就能拿到 N 倍尝试次数。要强一致需落库（给登录路径加一次写）或引入 Redis
+（架构约束禁止）。本题规模（单实例）下内存实现足够 —— 但**这是需要写下来的取舍**，
+而不是默认它没问题。键数量另有 10000 的上限并淘汰最久未用者，否则海量随机账号
+能把内存撑爆，那等于用限流本身做了一次 DoS。
+
 ---
 
 ## 8. 一句话总结
@@ -837,7 +882,7 @@ CI：  全零 SHA（分支首次推送）                          → 退出码
 - **S3**（`web` 等 `api` 健康）—— `depends_on` 改为 `condition: service_healthy`，消掉启动窗口的 502；
   ⚠️ 仅 `docker-compose config` 结构校验（本环境无 Docker 引擎）。
 
-**P2 已启动**（本轮完成三项）：
+**P2 已启动**（本轮完成四项）：
 
 - **S6**（liveness / readiness 拆分）—— 停库实测确认了两者分道扬镳：
   `/health/live` 仍 200、`/health/ready` 返回 503（见 §7.5）。
@@ -845,6 +890,8 @@ CI：  全零 SHA（分支首次推送）                          → 退出码
   双向本地验证（改迁移 → 报违规；新增迁移目录 → 放行），见 §7.6。
 - **C5**（分支保护声明）—— §6.3.1 明确 `main` 的 6 个 required checks；⚠️ 无法从仓库证明
   GitHub 侧已配置，验收时需当场核对。
+- **S7**（登录限流）—— 键 = 账号 + IP，5 次 / 10 分钟 → 封禁 5 分钟，429 + `Retry-After`；
+  与 E4 的闸门（503）刻意区分「配额」与「容量」，见 §7.7。
 
-仍待做：**S4**（entrypoint 错误可诊断，**需 Docker 引擎**）与 **S7**（登录限流，可与 E4 合并）。
+仍待做：**S4**（entrypoint 错误可诊断，**需 Docker 引擎**）。
 **E5（会话缓存）不建议做** —— 它与「登出即时失效」直接冲突，报告 §5.1 该行已说明取舍。

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * 端到端验证脚本 —— DEM-01 ~ DEM-08 + DEM-11（列表游标分页）+ DEM-12（请求编号）
- *                    + DEM-13（详情/历史分页）+ DEM-14（登录并发闸门）+ DEM-15（健康探针）
+ *                    + DEM-13（详情/历史分页）+ DEM-14（登录并发闸门）
+ *                    + DEM-15（健康探针）+ DEM-16（登录失败限流）
  *
  * 把《docs/测试与验证记录.md》§3 的手工 curl 步骤收敛成**一条可重复执行的命令**，
  * 输出「期望状态码 / 实际状态码」对照表，全部通过时退出码为 0。
@@ -85,6 +86,8 @@ async function call(method, path, { body, headers = {}, cookie } = {}) {
     cookie: raw.map((c) => c.split(';')[0]).join('; '),
     // 请求编号（报告 §5.2 S5）：用于断言「响应头始终回传编号」与「透传规则」
     requestId: res.headers.get('x-request-id'),
+    // 429 / 503 的重试建议（报告 §5.2 S7 与 §5.1 E4）
+    retryAfter: res.headers.get('retry-after'),
   };
 }
 
@@ -707,6 +710,56 @@ async function main() {
     'readiness',
     legacy.json?.probe,
   );
+
+  // ══════════════════ DEM-16 登录失败限流（S7）══════════════════
+  // 与 E4 的闸门分工：闸门管**容量**（在途 bcrypt 数，满了 → 503），
+  // 限流管**配额**（某来源连续失败次数，超了 → 429）。
+  // 429 告诉客户端「别再试了」，503 告诉它「稍后再试」—— 两者不可混用。
+  //
+  // 用**每次运行唯一**的探测账号：否则会把真实账号（alice/bob/carol 后面还要正常登录）
+  // 打到封禁，脚本就无法重复执行了。
+  const probeAccount = `probe-${RUN}`;
+  const probeCodes = [];
+  for (let i = 0; i < 8; i += 1) {
+    const r = await call('POST', '/auth/login', {
+      body: { account: probeAccount, password: 'definitely-wrong' },
+    });
+    probeCodes.push(r.status);
+  }
+
+  const first429 = probeCodes.indexOf(429);
+  check('DEM-16', '★ 连续错误密码最终会返回 429', true, first429 >= 0);
+  check(
+    'DEM-16',
+    '429 之前一律是 401（不混入其它错误码）',
+    true,
+    probeCodes.slice(0, first429).every((c) => c === 401),
+  );
+  check(
+    'DEM-16',
+    '★ 一旦 429 就不再回到 401（封禁是持续的）',
+    true,
+    first429 >= 0 && probeCodes.slice(first429).every((c) => c === 429),
+  );
+
+  // 封禁期间换成「正确」的密码也照样 429 —— 证明限流先于凭据校验。
+  // （探测账号并不存在，所以这里真正验证的是**拒绝发生在查库与比对之前**。）
+  const lockedAttempt = await call('POST', '/auth/login', {
+    body: { account: probeAccount, password: PASSWORD },
+  });
+  check('DEM-16', '★ 封禁期间换密码也 429（限流先于凭据校验）', 429, lockedAttempt.status);
+  check(
+    'DEM-16',
+    '429 带 Retry-After（客户端才知道等多久）',
+    true,
+    Number(lockedAttempt.retryAfter) > 0,
+  );
+
+  // 真实账号不受影响：限流键是 (账号, IP) 的组合，探测账号的失败不该波及 alice
+  const aliceStillOk = await call('POST', '/auth/login', {
+    body: { account: 'alice', password: PASSWORD },
+  });
+  check('DEM-16', '★ 探测账号被封不影响其它账号（键含账号）', 200, aliceStillOk.status);
 
   // ══════════════════ 输出报告 ══════════════════
 

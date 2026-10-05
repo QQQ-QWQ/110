@@ -66,10 +66,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
       this.logger.error(`${where} → ${status} ${code}`);
     }
 
-    // 503 表示「稍后重试能成功」（例如登录闸门已满），按 HTTP 语义给出重试建议。
+    // 429（配额耗尽）与 503（容量已满）都是「稍后重试可能成功」，
+    // 按 HTTP 语义给出重试建议。429 的秒数由业务层给出（登录限流的封禁剩余时间），
+    // 503 没有精确时间，给一个保守的默认值。
     // 其它 5xx 是故障，重试不一定有用，因此不给。
-    if (status === 503) {
-      response.setHeader('Retry-After', '1');
+    if (status === 429 || status === 503) {
+      const retryAfter = exception instanceof AppError ? exception.retryAfterSeconds : undefined;
+      response.setHeader('Retry-After', String(retryAfter ?? 1));
     }
 
     response.status(status).json({

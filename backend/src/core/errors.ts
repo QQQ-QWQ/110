@@ -12,6 +12,12 @@ export class AppError extends Error {
     message: string,
     public readonly status: number,
     public readonly details?: unknown,
+    /**
+     * 供 429 / 503 回传 `Retry-After`（秒）。未提供时过滤器给默认值 1。
+     * 单独一个字段而不是塞进 `details`：`details` 是「字段级校验信息」的语义，
+     * 混用会让前端难以区分「哪个字段错了」与「什么时候能重试」。
+     */
+    public readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = 'AppError';
@@ -59,4 +65,14 @@ export const Errors = {
    * 语义上它是「稍后重试能成功」，因此响应带 `Retry-After`。
    */
   overloaded: (msg = '服务繁忙，请稍后重试') => new AppError('SERVICE_BUSY', msg, 503),
+
+  /**
+   * 配额耗尽：某个来源（账号 + IP）连续登录失败次数过多（报告 §5.2 S7）。
+   *
+   * 用 429 而不是 503：这是**针对该调用方**的信号 —— 「你别再试了」，
+   * 而不是「服务端忙不过来」。两者对客户端的含义完全不同：429 应当停止重试，
+   * 503 应当稍后重试。`retryAfterSeconds` 会通过 `Retry-After` 头回传。
+   */
+  tooManyRequests: (msg = '尝试过于频繁，请稍后再试', retryAfterSeconds?: number) =>
+    new AppError('TOO_MANY_REQUESTS', msg, 429, undefined, retryAfterSeconds),
 };

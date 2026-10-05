@@ -1,11 +1,17 @@
 import { Logger } from '@nestjs/common';
 import { availableParallelism, cpus } from 'node:os';
+import { DEFAULT_THROTTLE, ThrottleConfig } from '../domain/login-throttle';
 import { Semaphore } from '../domain/semaphore';
 
 /**
- * 登录并发闸门的配置与装配（报告 §5.1 E4）。
- * 调度逻辑本身在 `domain/semaphore.ts`（纯逻辑、可单测）；这里只负责
- * 「读配置 + 记日志」，把两者分开是为了让核心逻辑不依赖 `process.env`。
+ * 登录防护的配置与装配（报告 §5.1 E4 + §5.2 S7）。
+ *
+ * 这里放两件事，它们防的是不同的问题：
+ *   · `LoginGate` —— **容量**：同时在途的密码校验数（bcryptjs 烧 CPU），满了 → 503
+ *   · `resolveLoginThrottleConfig` —— **配额**：某个来源连续失败次数，超了 → 429
+ *
+ * 调度逻辑本身在 `domain/`（纯逻辑、可单测）；这里只负责「读配置 + 记日志」，
+ * 把两者分开是为了让核心逻辑不依赖 `process.env`。
  */
 
 export interface LoginGateConfig {
@@ -49,6 +55,25 @@ export function resolveLoginGateConfig(env: NodeJS.ProcessEnv = process.env): Lo
     concurrency: readInt(env.LOGIN_CONCURRENCY, defaultLoginConcurrency(), 'LOGIN_CONCURRENCY', 1),
     queueLimit: readInt(env.LOGIN_QUEUE_LIMIT, 50, 'LOGIN_QUEUE_LIMIT', 0),
     timeoutMs: readInt(env.LOGIN_ACQUIRE_TIMEOUT_MS, 5000, 'LOGIN_ACQUIRE_TIMEOUT_MS', 0),
+  };
+}
+
+/** 登录失败限流的配置（报告 §5.2 S7）。默认 5 次 / 10 分钟窗口 / 封禁 5 分钟。 */
+export function resolveLoginThrottleConfig(env: NodeJS.ProcessEnv = process.env): ThrottleConfig {
+  return {
+    maxFailures: readInt(
+      env.LOGIN_MAX_FAILURES,
+      DEFAULT_THROTTLE.maxFailures,
+      'LOGIN_MAX_FAILURES',
+      1,
+    ),
+    windowMs: readInt(
+      env.LOGIN_FAILURE_WINDOW_MS,
+      DEFAULT_THROTTLE.windowMs,
+      'LOGIN_FAILURE_WINDOW_MS',
+      1,
+    ),
+    lockoutMs: readInt(env.LOGIN_LOCKOUT_MS, DEFAULT_THROTTLE.lockoutMs, 'LOGIN_LOCKOUT_MS', 1),
   };
 }
 

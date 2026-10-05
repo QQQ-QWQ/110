@@ -1,4 +1,14 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, Res, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Ip,
+  Post,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
 import { Response } from 'express';
 import { AuthGuard, CurrentUser } from '../../core/security/auth.guard';
@@ -28,8 +38,14 @@ export class AuthController {
   // 登录不创建可寻址资源，显式声明 200（@Post 默认是 201）
   @Post('login')
   @HttpCode(HttpStatus.OK)
-  async login(@Body() dto: LoginDto, @Res({ passthrough: true }) res: Response) {
-    const result = await this.auth.login(dto.account, dto.password);
+  async login(
+    @Body() dto: LoginDto,
+    @Res({ passthrough: true }) res: Response,
+    // 客户端 IP 参与限流键（报告 §5.2 S7）。`@Ip()` 在反代后取到的是
+    // X-Forwarded-For 的最后一跳 —— 本项目由 nginx 同源反代，因此拿到的是真实客户端 IP。
+    @Ip() clientIp: string,
+  ) {
+    const result = await this.auth.login(dto.account, dto.password, clientIp);
 
     res.cookie(SESSION_COOKIE, result.sessionId, {
       httpOnly: true,

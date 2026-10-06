@@ -479,7 +479,7 @@ CSS 与 JS 各维护一套断点判断，迟早会出现「CSS 认为是移动�
 - `scripts/verify-design-tokens.mjs` —— 把 §10.3 清单里可自动化的部分变成门禁
   （已接入 CI 的 frontend job）：未定义引用 0、组件内硬编码颜色 0、裸 `cubic-bezier` 0、
   `linear-gradient` 恰好 2 处、`font-weight: 700` 0、裸圆角 0、裸时长 0
-- `vue-tsc --noEmit` 0 error；`vite build` 通过；`vitest` **77/77** 通过
+- `vue-tsc --noEmit` 0 error；`vite build` 通过；`vitest` **82/82** 通过
 
 #### P2 的实际落地（2026-10-05）：12 条里完成 10 条
 

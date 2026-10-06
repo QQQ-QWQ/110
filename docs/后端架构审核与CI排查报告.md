@@ -964,7 +964,23 @@ N 个副本就能拿到 N 倍尝试次数。要强一致需落库（给登录路
 > 这正是「阻断 high/critical」这条规则存在的意义。
 
 > **一处如实说明**：Dependabot 的**安全更新**（security updates）是仓库设置里的开关，
-> 不在这个配置文件里。配置了版本更新不等于开了安全更新 —— 交付验收时应确认两者都已启用。
+> 不在这个配置文件里。配置了版本更新不等于开了安全更新。
+>
+> ✅ **2026-10-06 已开启并复核**。过程中发现一件事：**这里其实是两个开关，不是一个**。
+> 想开「安全更新」时 API 直接报 422 ——
+> `Vulnerability alerts must be enabled to configure automated security fixes.`
+> 也就是说 **「漏洞告警」（Dependabot alerts）是「安全更新」的前置条件**，
+> 而当时**两个都是关的**。按顺序开启后复核：
+>
+> | 开关 | 开启前 | 开启后 |
+> | --- | --- | --- |
+> | Dependabot alerts（漏洞告警） | 关闭（API 404） | ✅ 已启用 |
+> | Dependabot security updates（安全更新） | 关闭 | ✅ `{"enabled":true,"paused":false}` |
+>
+> **「配置了版本更新 ≠ 开了安全更新」这句话原来只说对了一半** ——
+> 准确说法是「配了版本更新 ≠ 开了告警 ≠ 开了安全更新」，三者互相独立、且有依赖顺序。
+> 复核命令：`gh api repos/QQQ-QWQ/110/automated-security-fixes`
+> 与 `gh api repos/QQQ-QWQ/110/vulnerability-alerts -i`。
 
 **首次运行的实际结果（2026-10-05）**：配置生效当天开出 7 个 PR。按「只合有价值的、
 其余关闭」处理，结果如下 —— 这个过程本身就是一次对依赖生态的真实体检：

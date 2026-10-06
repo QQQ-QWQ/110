@@ -43,16 +43,6 @@ const ALLOWLIST = [
     reviewedAt: '2026-10-05',
     revisitWhen: 'Prisma 发布包含 deepmerge-ts>=8 的 6.x/7.x 版本时',
   },
-  {
-    ghsa: 'GHSA-82fw-gwwq-j7x9',
-    module: '@vitest/mocker',
-    severity: 'moderate',
-    reason:
-      'vitest 的传递依赖，**仅开发期测试工具**，不进生产镜像。' +
-      '修复需要 vitest 4 → 5 的破坏性升级，而它属于 moderate 级别。',
-    reviewedAt: '2026-10-05',
-    revisitWhen: 'vitest 5 稳定后随测试框架一起升级时',
-  },
 ];
 
 const BLOCKING = new Set(['high', 'critical']);

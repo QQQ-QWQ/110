@@ -122,10 +122,11 @@ updates:
           - globals
         update-types: ['minor', 'patch']
     ignore:
-      # vitest 4 → 5 是破坏性升级（已知的 moderate 漏洞需要它才能修），
-      # 由人决定何时随测试框架一起升，而不是被自动 PR 推着走。
-      - dependency-name: vitest
-        update-types: ['version-update:semver-major']
+      # 这里曾经忽略 vitest 的大版本（理由是「已知 moderate 漏洞需要它才能修，
+      # 由人决定何时升」）。2026-10-06 这条规则被证明是**有害的** ——
+      # 该漏洞后来升级为 **critical**（tinypool 原型污染 → RCE），而修复恰好就是
+      # 被我们忽略掉的 vitest 5。**忽略某个包的大版本，等于放弃了「该包发布了
+      # 需要大版本才能修的安全问题」这条情报。** 已移除，让大版本正常开 PR 由人评估。
       # Vite 6 → 8 跨两个大版本，会改构建管线与插件 API。它与 @vitejs/plugin-vue、
       # vitest 必须**成套升级** —— 单独升 vite 必然失败（PR #19 已实测）。
       - dependency-name: vite

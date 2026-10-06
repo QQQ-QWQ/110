@@ -386,7 +386,9 @@ cd frontend && npm run format:check && npm run lint && npm run typecheck && npm 
 | `utils/format.test.ts` | 11 | 非法日期回退、相对时间边界、emoji 安全截断 |
 | `components/render.test.ts` | 24 | 组件**真实渲染输出**：引导文案随「状态 × 角色」变化、Vn 独立留痕、验收面板初始禁用态、`role` 语义 |
 
-> 前端组件测试用 Vue 内置的 `vue/server-renderer` 做渲染断言，**零新增依赖**（不引入 jsdom / test-utils）；断言的是真实 DOM 结构与 aria 属性，而非「组件能被挂载」。交互流程与响应式布局由 `scripts/e2e.mjs` 与手工验收覆盖。
+> 前端组件测试**以 SSR 渲染断言为主**（用 Vue 内置的 `vue/server-renderer`，不引入 test-utils），断言的是真实 DOM 结构与 aria 属性，而非「组件能被挂载」。
+> **需要交互序列的用例另用 `happy-dom` 覆盖**（仅开发期依赖，不进生产镜像）—— 见 `frontend/src/views/DetailView.dem-09.test.ts`：它挂载真实组件、驱动真实点击与输入，补上了「提交失败后输入是否还在」这类只能靠交互验证的行为。
+> 跨层流程与响应式布局仍由 `scripts/e2e.mjs`、`scripts/capture-screens.mjs` 与手工验收覆盖。
 
 **架构报告改进项的落地情况**（详见 [`docs/后端架构审核与CI排查报告.md`](docs/后端架构审核与CI排查报告.md) §6）
 
@@ -424,7 +426,29 @@ P2 —— 已完成 4 项：
 **已知质量缺口（诚实披露）**：本地前置检查已有 `scripts/preflight.mjs`，并可用 `npm run hooks:install` 挂到 **pre-push 钩子**上自动执行（一次安装长期生效；钩子可被 `--no-verify` 绕过 —— 这是 git 的设计，真正的门禁仍在 CI）。依赖漏洞扫描已接入（`scripts/check-audit.mjs`，阻断 high/critical），但**仍有 1 条已豁免的例外**：后端 3 个 high 全部来自 `deepmerge-ts`（经 `prisma` → `@prisma/config` 传入，**精确锁定 7.1.5**，唯一修复是升到 Prisma 8 大版本）—— 漏洞需要合并攻击者可控的递归对象图，而 Prisma 配置来自仓库内静态文件且只在构建/启动时作为 CLI 使用，**不在 HTTP 请求路径上**。豁免写明了理由与复核时机，且**豁免消失时门禁会失败**提醒删除。
 
 > **前端的 `vitest` 豁免已于 2026-10-06 消除，过程值得记一笔**：它当初是 2 个 **moderate**，被豁免的理由是「仅开发期测试工具 + 修复需破坏性升级」。后来该漏洞**升级为 critical**（`tinypool` 原型污染 → RCE），修复仍然只有升到 vitest 5。于是升级到 5.0.3，**`npm audit` 归零**，测试全过（当时 77/77，后补 DEM-09 前端用例增至 82/82）。
-> **两条教训**：① 豁免一条漏洞时，「严重级别」是会变的 —— `revisitWhen` 不能只写「等有空」，要写成**可判定的条件**；② 我们同时在 Dependabot 里忽略了 vitest 的大版本，**而修复恰好就是那个被忽略的大版本** —— 忽略某个包的大版本，等于放弃了「该包发布了需要大版本才能修的安全问题」这条情报。该忽略已移除。另外 Dependabot 的**安全更新开关**（仓库设置项，不在配置文件里）需在交付时确认已启用。**接入当天 Dependabot 就开出了 PR，其中 `@nestjs/common` 那个 CI 红了 —— 门禁判对了**：它试图把 `@nestjs/common` 单独升到 12.x，而 `@nestjs/config` 的 peer 仍写着 `@nestjs/common ^10 || ^11`，`npm ci` 必然 ERESOLVE 失败（已本地复现）。据此把 `@nestjs/*` 分成一组并挡住其 major —— 框架主版本要等整个生态跟上才能升。单元测试覆盖的是纯逻辑，不覆盖 HTTP 与数据库交互；跨层端到端行为由 `scripts/e2e.mjs` 覆盖（DEM-00~08 + DEM-11~16，已实跑 **93/93** 通过），并**已接入 CI**（`e2e` job，见上）。`docker compose up --build` 三容器一键启动、**nginx 反代与命名卷挂载已实测通过**（2026-10-05，Docker 引擎可用后补测）：三容器全部 healthy、启动顺序正确、首页与 `/api/health/ready` 均 200、经真实 nginx 的完整端到端 **93/93 通过**；`--scale api=2` 成功且请求确实分发到两个实例（7 / 5）；`down` + `up` 后数据一字不差（3 / 5 / 16）。**原先标注「只做了结构解析校验」的 E3 nginx 改动现已验证语义** —— `/api/` 没有 502。S3 的「无 502 窗口」也补了实测（启动期间探测：`200`×5、连接被拒×4、**`502`×0**）。E4 的真实饱和路径同样补上：绕过 nginx 直连发 150 真并发 → **503 × 145 + 401 × 5**（5 = 并发 2 + 队列 3），工具 `scripts/probe-login-saturation.mjs`。详见报告 §7.10。DEM-09（停库降级为通用 500）也已在真实容器里补测：`docker compose stop db` 后业务接口返回 **500** + 通用文案 + `requestId`，**无堆栈、无 SQL、无表名**；`start db` 后自动恢复（readiness 回到 200，端到端复跑 93/93）。**并发压测已做**（登录闸门的饱和路径，见上）。前端组件测试为 SSR 渲染断言，不含 jsdom 点击交互模拟。
+> **两条教训**：
+>
+> 1. **豁免一条漏洞时，「严重级别」是会变的** —— `revisitWhen` 不能只写「等有空」，要写成**可判定的条件**。
+> 2. **忽略某个包的大版本，等于放弃了「该包发布了需要大版本才能修的安全问题」这条情报** —— 我们当时在 Dependabot 里忽略了 vitest 的大版本，**而修复恰好就是那个被忽略的大版本**。该忽略已移除。
+>
+> **Dependabot 的另外两件事**：
+>
+> - **安全更新开关**（仓库设置项，不在配置文件里）需在交付时确认已启用。
+> - **接入当天就开出了一个 CI 会红的 PR，门禁判对了**：它试图把 `@nestjs/common` 单独升到 12.x，而 `@nestjs/config` 的 peer 仍写着 `@nestjs/common ^10 || ^11`，`npm ci` 必然 ERESOLVE 失败（已本地复现）。据此把 `@nestjs/*` 分成一组并挡住其 major —— 框架主版本要等整个生态跟上才能升。
+>
+> **测试覆盖的真实边界**：
+>
+> - 单元测试覆盖**纯逻辑**，不覆盖 HTTP 与数据库交互；跨层行为由 `scripts/e2e.mjs` 覆盖（DEM-00~08 + DEM-11~16，实跑 **93/93**），**已接入 CI**。
+> - 前端组件测试以 **SSR 渲染断言**为主；**需要交互序列的用例用 `happy-dom` 单独覆盖**（DEM-09 的「失败保留输入」共 5 条断言，随 `前端` job 每次 CI 运行）。
+>
+> **容器路径已全部实测**（2026-10-05，Docker 引擎可用后补测）：
+>
+> - `docker compose up --build` 三容器全部 healthy、启动顺序正确；经真实 nginx 的端到端 **93/93**。
+> - `--scale api=2` 成功，请求确实分发到两个实例（7 / 5）。
+> - `down` + `up` 后数据一字不差（3 / 5 / 16）。
+> - 原先只做结构校验的 **E3 nginx 改动已验证语义**（`/api/` 无 502）；**S3 的无 502 窗口**也补了实测（启动期间 `502`×0）。
+> - **E4 真实饱和**：绕过 nginx 直连发 150 真并发 → **503 × 145 + 401 × 5**（5 = 并发 2 + 队列 3），工具 `scripts/probe-login-saturation.mjs`。
+> - **DEM-09 停库实测**：`docker compose stop db` 后业务接口返回 **500** + 通用文案 + `requestId`，**无堆栈 / 无 SQL / 无表名**；`start db` 后自动恢复（readiness 回到 200，端到端复跑 93/93）。
 
 ---
 

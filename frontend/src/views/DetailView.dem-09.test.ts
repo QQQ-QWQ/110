@@ -165,7 +165,9 @@ describe('DEM-09（前端）：保存失败保留输入可重试', () => {
     // ① 弹窗没有关闭
     expect(document.querySelector('#submit-artifacts'), '失败后弹窗必须留在原地').toBeTruthy();
     // ② 输入**一字不动** —— 这正是 DEM-09 要求的「保留可重试」
-    expect((document.querySelector('#submit-artifacts') as HTMLTextAreaElement).value).toBe(ARTIFACT);
+    expect((document.querySelector('#submit-artifacts') as HTMLTextAreaElement).value).toBe(
+      ARTIFACT,
+    );
     expect((document.querySelector('#submit-note') as HTMLTextAreaElement).value).toBe(NOTE);
     // ③ 失败原因可读，且出现在弹窗里（而不是只在转瞬即逝的 toast 里）
     expect(document.querySelector('.modal')?.textContent).toContain('服务器内部错误');
@@ -218,7 +220,9 @@ describe('DEM-09（前端）：保存失败保留输入可重试', () => {
     // 412 说明本地 rowVersion 已陈旧 —— 必须自动刷新，否则用户重试还是失败
     expect(mocks.detail.mock.calls.length).toBeGreaterThan(detailCallsBefore);
     // 而输入仍然保留（刷新只更新 rowVersion，不动表单）
-    expect((document.querySelector('#submit-artifacts') as HTMLTextAreaElement).value).toBe(ARTIFACT);
+    expect((document.querySelector('#submit-artifacts') as HTMLTextAreaElement).value).toBe(
+      ARTIFACT,
+    );
   });
 
   it('校验不通过时**不发请求**，错误就地提示', async () => {

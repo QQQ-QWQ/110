@@ -57,7 +57,36 @@ function git(...a) {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
   });
-  return { code: r.status, out: (r.stdout || '') + (r.stderr || '') };
+  return {
+    code: r.status,
+    out: (r.stdout || '') + (r.stderr || ''),
+    spawnError: r.error?.code ?? null,
+  };
+}
+
+/**
+ * 命令**没能跑起来**（与「跑起来但返回非 0」是两回事）。
+ *
+ * 必须区分这两者。`spawnSync` 失败时 `status` 是 `null`，若直接按「非 0 = 不通过」处理，
+ * 就会把「环境跑不了命令」误报成「仓库有问题」—— 这不是假设，我们真的踩过：
+ * 某个环境下 `spawnSync` 对**所有**命令返回 `EBUSY`，于是 preflight 报出
+ * 「`.env` 未被 .gitignore 忽略，一次 `git add -A` 就可能把真实凭据提交上去」——
+ * 一条**假的安全警报**。而 `.env` 当时是被正确忽略的。
+ *
+ * **假警报比漏报更糟**：它会让人开始忽略这个检查，最后连真警报也不看了。
+ *
+ * 仍然算「不通过」（环境无法验证 ≠ 通过），但原因必须写准。
+ */
+function spawnFailure(r) {
+  if (r.spawnError) {
+    return `**无法执行该检查**（${r.spawnError}）—— 这是环境问题，不是仓库问题。请换一个能正常调用命令行的环境重跑。`;
+  }
+  // `status === null` 且没有 spawn 错误：进程被信号中断，或 shell 起来了但内层命令没能正常结束。
+  // 无论哪种，都**不是**「命令跑通了但结果不合格」—— 不能按「不通过」的原因为报。
+  if (r.code === null) {
+    return '**无法执行该检查**（命令未返回退出码，通常是被信号中断或受环境限制）—— 这是环境问题，不是仓库问题。';
+  }
+  return '';
 }
 
 /** 在某个子包里跑 npm script。shell:true 是为了跨平台解析 npm(.cmd)。 */
@@ -207,7 +236,10 @@ function checkSecrets() {
   // 跑才有意义 —— 也正因如此，它必须放在本地脚本里。）
   if (fs.existsSync(path.join(ROOT, '.env'))) {
     const ignored = git('check-ignore', '-q', '.env');
-    if (ignored.code !== 0) {
+    const why = spawnFailure(ignored);
+    if (why) {
+      problems.push(why);
+    } else if (ignored.code !== 0) {
       problems.push(
         '.env 存在但**未被 .gitignore 忽略** —— 一次 `git add -A` 就可能把真实凭据提交上去',
       );
@@ -297,6 +329,11 @@ function checkPrismaFormat() {
   }
 
   const fmt = npmRun('backend', 'prisma:format');
+  const fmtWhy = spawnFailure(fmt);
+  if (fmtWhy) {
+    record(name, false, fmtWhy, ['换一个能正常调用命令行的环境重跑。']);
+    return;
+  }
   if (fmt.code !== 0) {
     record(name, false, `prisma format 执行失败（退出码 ${fmt.code}）：\n${fmt.out}`, [
       'prisma format 失败通常意味着 schema 本身有语法错误，先修语法。',
@@ -305,6 +342,11 @@ function checkPrismaFormat() {
   }
 
   const diff = git('diff', '--quiet', '--', 'backend/prisma/schema.prisma');
+  const diffWhy = spawnFailure(diff);
+  if (diffWhy) {
+    record(name, false, diffWhy, ['换一个能正常调用命令行的环境重跑。']);
+    return;
+  }
   const ok = diff.code === 0;
   record(name, ok, ok ? '' : git('--no-pager', 'diff', '--', 'backend/prisma/schema.prisma').out, [
     '本地执行 `cd backend && npx prisma format` 后提交。',
@@ -324,6 +366,11 @@ function checkPrettier(pkgDir) {
   }
   const script = FIX ? 'format' : 'format:check';
   const r = npmRun(pkgDir, script);
+  const why = spawnFailure(r);
+  if (why) {
+    record(name, false, why, ['换一个能正常调用命令行的环境重跑。']);
+    return;
+  }
   record(name, r.code === 0, r.code === 0 ? '' : r.out.trim(), [
     `在 ${pkgDir}/ 下执行 \`npm run format\` 自动修格式。`,
   ]);
